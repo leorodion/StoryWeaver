@@ -1,6 +1,4 @@
-
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import ReactDOM from 'react-dom/client';
 import { generateImageSet, generateVideoFromScene, StoryboardScene, generatePromptFromAudio, generateCharacterDescription, AudioOptions, generateSingleImage, Character, generateCameraAnglesFromImage, editImage, EditImageParams, CAMERA_MOVEMENT_PROMPTS, generateStructuredStory, Storybook, generateScenesFromNarrative, generateStorybookSpeech, PREBUILT_VOICES, VOICE_EXPRESSIONS, StorybookParts, ACCENT_OPTIONS, CAMERA_ANGLE_OPTIONS, generateCharacterVisual } from './services/geminiService';
 import { fileToBase64, base64ToBytes, compressImageBase64, pcmToWavBlob } from './utils/fileUtils';
 import { parseErrorMessage } from './utils/errorUtils';
@@ -66,12 +64,6 @@ type DailyCounts = {
     lastReset: string; // e.g., "Mon Sep 23 2024"
 };
 
-type DailyLimits = {
-    maxImages: number;
-    maxVideos: number;
-    isEnabled: boolean;
-};
-
 type VideoClip = {
   videoUrl: string | null;
   audioUrl: string | null;
@@ -92,7 +84,6 @@ type VideoState = {
   speaker: string; // Tracks the detected or selected speaker for UI highlighting
   cameraMovement: string;
   isCameraMovementOpen?: boolean;
-  useLipSync: boolean; // Toggle for Lip Sync/Speaking Animation
 };
 
 // Use AI Studio's synchronized storage if available, with a fallback to local storage.
@@ -187,20 +178,6 @@ const loadDailyCounts = async (): Promise<DailyCounts | null> => {
     }
 };
 
-const loadDailyLimits = (): DailyLimits => {
-    try {
-        const data = localStorage.getItem('storyWeaverDailyLimits');
-        if (data) return JSON.parse(data);
-    } catch (e) {
-        console.error("Failed to load daily limits", e);
-    }
-    return { maxImages: 50, maxVideos: 5, isEnabled: false };
-};
-
-const saveDailyLimits = (limits: DailyLimits) => {
-    localStorage.setItem('storyWeaverDailyLimits', JSON.stringify(limits));
-};
-
 function escapeRegExp(string: string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -221,8 +198,7 @@ const App: React.FC = () => {
     const [aspectRatio, setAspectRatio] = useState<string>('16:9');
     const [imageStyle, setImageStyle] = useState<string>('Nigerian Cartoon');
     const [imageModel, setImageModel] = useState<string>('gemini-3-pro-image-preview');
-    // Ensure default is Veo 2 Fast (veo-2.0-generate-preview)
-    const [videoModel, setVideoModel] = useState<string>('veo-2.0-generate-preview');
+    const [videoModel, setVideoModel] = useState<string>('veo-3.1-fast-generate-preview');
     const [genre, setGenre] = useState<string>('General');
     const [appStatus, setAppStatus] = useState<AppStatus>({ status: 'idle', error: null });
     const [statusMessage, setStatusMessage] = useState<string>('');
@@ -244,7 +220,6 @@ const App: React.FC = () => {
         sceneIndex: number; 
         editPrompt: string;
         editHistory: string[];
-        editHistory: string[];
         editHistoryIndex: number;
     }) | null>(null);
 
@@ -265,7 +240,7 @@ const App: React.FC = () => {
     });
     const [storybookAiPrompt, setStorybookAiPrompt] = useState('');
     const [wantsDialogue, setWantsDialogue] = useState(false);
-    const [wantsDialogueForAnalysis, setWantsDialogueForAnalysis] = useState(true); // Default to true as per user request
+    const [wantsDialogueForAnalysis, setWantsDialogueForAnalysis] = useState(false);
     const [isStorybookLoading, setIsStorybookLoading] = useState(false);
     const [isStorybookAnalyzing, setIsStorybookAnalyzing] = useState(false);
     const [storybookError, setStorybookError] = useState<{ message: string; type: 'error' | 'warning' } | null>(null);
@@ -280,8 +255,6 @@ const App: React.FC = () => {
     const audioFileInputRef = useRef<HTMLInputElement>(null);
     const [isProcessingAudio, setIsProcessingAudio] = useState(false);
     const [dailyCounts, setDailyCounts] = useState<DailyCounts>({ images: 0, videos: 0, lastReset: new Date().toDateString() });
-    const [dailyLimits, setDailyLimits] = useState<DailyLimits>({ maxImages: 50, maxVideos: 5, isEnabled: false });
-    const [showUsageModal, setShowUsageModal] = useState(false);
 
     const prevCharactersRef = useRef<Character[]>(characters);
 
@@ -352,7 +325,6 @@ const App: React.FC = () => {
             }
         };
         initializeCounts();
-        setDailyLimits(loadDailyLimits());
 
         // Load characters from local storage
         try {
@@ -702,32 +674,6 @@ const App: React.FC = () => {
         });
     }, []);
 
-    const handleLimitChange = (field: 'maxImages' | 'maxVideos', value: number) => {
-        const newLimits = { ...dailyLimits, [field]: value };
-        setDailyLimits(newLimits);
-        saveDailyLimits(newLimits);
-    };
-
-    const toggleLimits = () => {
-        const newLimits = { ...dailyLimits, isEnabled: !dailyLimits.isEnabled };
-        setDailyLimits(newLimits);
-        saveDailyLimits(newLimits);
-    };
-
-    const checkLimits = (type: 'images' | 'videos', requestedAmount = 1): boolean => {
-        if (!dailyLimits.isEnabled) return true;
-        
-        const currentUsage = type === 'images' ? dailyCounts.images : dailyCounts.videos;
-        const limit = type === 'images' ? dailyLimits.maxImages : dailyLimits.maxVideos;
-
-        if (currentUsage + requestedAmount > limit) {
-            setAppStatus({ status: 'error', error: `Daily ${type === 'images' ? 'image' : 'video'} limit reached! Check your usage settings.` });
-            setShowUsageModal(true);
-            return false;
-        }
-        return true;
-    };
-
     const handleAskAiForStory = async () => {
         if (!storybookAiPrompt.trim() || isStorybookLoading) return;
         setIsStorybookLoading(true);
@@ -741,19 +687,10 @@ const App: React.FC = () => {
                 wantsDialogue,
                 signal
             );
-            
-            // Map the scenes to ensure they are locked by default
-            const scenesWithLocks = newStoryParts.scenes.map(s => ({
-                ...s,
-                id: s.id || Date.now() + Math.random(),
-                isDescriptionLocked: true, // Default to locked as per user request
-                isNarrationLocked: true,   // Default to locked as per user request
-            }));
-
             setStorybookContent(prev => ({
                 ...prev,
                 storyNarrative: newStoryParts.storyNarrative,
-                scenes: scenesWithLocks
+                scenes: newStoryParts.scenes
             }));
             setIsAiStoryHelpMode(false);
         } catch (error) {
@@ -800,18 +737,9 @@ const App: React.FC = () => {
                 wantsDialogueForAnalysis,
                 signal
             );
-            
-             // Map the scenes to ensure they are locked by default
-             const scenesWithLocks = newScenes.map(s => ({
-                ...s,
-                id: s.id || Date.now() + Math.random(),
-                isDescriptionLocked: true, // Default to locked as per user request
-                isNarrationLocked: true,   // Default to locked as per user request
-            }));
-
             setStorybookContent(current => ({
                 ...current,
-                scenes: scenesWithLocks
+                scenes: newScenes
             }));
         } catch (error) {
             if (handleApiKeyError(error)) return;
@@ -861,8 +789,6 @@ const App: React.FC = () => {
             setStorybookError({ message: 'Your storybook has no scenes to generate instead.', type: 'warning' });
             return;
         }
-
-        if (!checkLimits('images', storybookContent.scenes.length)) return;
         
         if (!window.confirm("This will replace your current storyboard with a new one generated from this script. Are you sure you want to continue?")) {
             return;
@@ -907,7 +833,6 @@ const App: React.FC = () => {
                 voiceoverFile: null,
                 speaker: detectedSpeaker,
                 cameraMovement: 'Static Hold',
-                useLipSync: false,
             };
         });
 
@@ -1021,7 +946,7 @@ const App: React.FC = () => {
         } finally {
             abortControllerRef.current = null;
         }
-    }, [storybookContent, characters, aspectRatio, imageStyle, genre, imageModel, incrementCount, checkLimits]);
+    }, [storybookContent, characters, aspectRatio, imageStyle, genre, imageModel, incrementCount]);
 
     const handleGenerateSceneFromStorybook = async (index: number, description: string) => {
         if (!description.trim()) {
@@ -1029,8 +954,6 @@ const App: React.FC = () => {
             setTimeout(() => setAppStatus(prev => ({ ...prev, error: null })), 3000);
             return;
         }
-        
-        if (!checkLimits('images', 1)) return;
         
         // Immediately start generation flow
         setShowStorybookPanel(false);
@@ -1060,7 +983,6 @@ const App: React.FC = () => {
                 voiceoverFile: null,
                 speaker: 'Narrator',
                 cameraMovement: 'Static Hold',
-                useLipSync: false,
             }],
             aspectRatio,
             imageStyle,
@@ -1444,8 +1366,6 @@ const App: React.FC = () => {
                 character.name,
                 character.description,
                 imageStyle,
-                null,
-                null,
                 signal
             );
     
@@ -1488,8 +1408,6 @@ const App: React.FC = () => {
         if (!prompt.trim() || appStatus.status === 'loading') {
             return;
         }
-
-        if (!checkLimits('images', imageCount)) return;
 
         setAppStatus({ status: 'loading', error: null });
         setStatusMessage('Starting generation...');
@@ -1547,7 +1465,6 @@ const App: React.FC = () => {
                             voiceoverFile: null,
                             speaker: 'Narrator',
                             cameraMovement: 'Static Hold',
-                            useLipSync: false,
                         })),
                     }
                     : item
@@ -1586,14 +1503,12 @@ const App: React.FC = () => {
         } finally {
             abortControllerRef.current = null;
         }
-    }, [prompt, imageCount, aspectRatio, imageStyle, genre, characters, imageModel, appStatus.status, incrementCount, checkLimits]);
+    }, [prompt, imageCount, aspectRatio, imageStyle, genre, characters, imageModel, appStatus.status, incrementCount]);
 
 
     const handleRegenerateScene = useCallback(async (generationId: number, sceneIndex: number) => {
         const generationItem = generationHistory.find(item => item.id === generationId);
         if (!generationItem) return;
-
-        if (!checkLimits('images', 1)) return;
 
         const sceneToRegenerate = generationItem.imageSet[sceneIndex];
         const signal = startOperation();
@@ -1676,7 +1591,7 @@ const App: React.FC = () => {
         } finally {
             abortControllerRef.current = null;
         }
-    }, [generationHistory, incrementCount, checkLimits]);
+    }, [generationHistory, incrementCount]);
 
     const handleRemoveAngleScene = (generationId: number, sceneIndex: number) => {
         setGenerationHistory(prev =>
@@ -1745,15 +1660,6 @@ const App: React.FC = () => {
         }));
     };
 
-    const toggleLipSync = (generationId: number, sceneIndex: number) => {
-        setGenerationHistory(prev => prev.map(item => {
-            if (item.id !== generationId) return item;
-            const newVideoStates = [...item.videoStates];
-            newVideoStates[sceneIndex] = { ...newVideoStates[sceneIndex], useLipSync: !newVideoStates[sceneIndex].useLipSync };
-            return { ...item, videoStates: newVideoStates };
-        }));
-    };
-
     const handleGenerateVideo = useCallback(async (generationId: number, sceneIndex: number, extendFromLastClip = false) => {
         const generationItem = generationHistory.find(item => item.id === generationId);
         if (!generationItem) return;
@@ -1761,8 +1667,6 @@ const App: React.FC = () => {
         const scene = generationItem.imageSet[sceneIndex];
         const videoState = generationItem.videoStates[sceneIndex];
         if (!scene || videoState.status === 'loading') return;
-
-        if (!checkLimits('videos', 1)) return;
     
         let previousVideoObject: any = null;
         if (extendFromLastClip) {
@@ -1814,8 +1718,7 @@ const App: React.FC = () => {
                 videoState.cameraMovement,
                 (message) => updateVideoState({ loadingMessage: message }),
                 previousVideoObject,
-                signal,
-                videoState.useLipSync // Pass the toggle state
+                signal
             );
             
             incrementCount('videos', 1);
@@ -1855,7 +1758,7 @@ const App: React.FC = () => {
         } finally {
             abortControllerRef.current = null;
         }
-    }, [generationHistory, videoModel, incrementCount, checkLimits]);
+    }, [generationHistory, videoModel, incrementCount]);
     
     const handleHistoryNavigation = (index: number) => {
         if (index >= 0 && index < generationHistory.length) {
@@ -1972,11 +1875,6 @@ const App: React.FC = () => {
     
         const generationItem = generationHistory.find(item => item.id === generationId);
         if (!generationItem) return;
-
-        if (!checkLimits('images', selectedAngles.length)) {
-             setIsAngleModalOpen(false);
-             return;
-        }
     
         setIsAngleModalOpen(false);
         const scene = generationItem.imageSet[sceneIndex];
@@ -2002,7 +1900,7 @@ const App: React.FC = () => {
                     imageStyle: generationItem.imageStyle,
                     genre: generationItem.genre,
                     characters: generationItem.characters,
-                    imageModel: 'gemini-3-pro-image-preview', 
+                    imageModel: 'gemini-2.5-flash-image', 
                 },
                 selectedAngles,
                 (message) => setStatusMessage(message),
@@ -2034,7 +1932,6 @@ const App: React.FC = () => {
                         voiceoverFile: parentVideoState.voiceoverFile, 
                         speaker: parentVideoState.speaker, 
                         cameraMovement: 'Static Hold',
-                        useLipSync: false,
                     }));
                     newVideoStates.splice(sceneIndex + 1, 0, ...videoStatesToInsert);
     
@@ -2065,7 +1962,7 @@ const App: React.FC = () => {
             setAngleSelectionTarget(null);
             setSelectedAngles([]);
         }
-    }, [generationHistory, incrementCount, angleSelectionTarget, selectedAngles, appStatus.error, checkLimits]);
+    }, [generationHistory, incrementCount, angleSelectionTarget, selectedAngles, appStatus.error]);
     
     const startEditing = (generationId: number, sceneIndex: number) => {
         const generationItem = generationHistory.find(item => item.id === generationId);
@@ -2142,8 +2039,6 @@ const App: React.FC = () => {
     const submitEdit = async () => {
         if (!editingScene || !editingScene.src) return;
 
-        if (!checkLimits('images', 1)) return;
-
         const generationItem = generationHistory.find(item => item.id === editingScene.generationId);
         if (!generationItem) return;
 
@@ -2188,8 +2083,7 @@ const App: React.FC = () => {
                 genre: generationItem.genre,
                 characters: generationItem.characters,
                 hasVisualMasks, // Pass flag to service
-                signal,
-                imageModel: generationItem.imageModel.includes('gemini') ? generationItem.imageModel : 'gemini-3-pro-image-preview'
+                signal
             });
 
             if (src && !error) {
@@ -2304,8 +2198,7 @@ const App: React.FC = () => {
         for (const file of filesArray) {
             try {
                 const base64 = await fileToBase64(file);
-                // Capture MIME type to ensure correct rendering (e.g. for JPEGs)
-                const scene: AppStoryboardScene = { src: base64, prompt: file.name, mimeType: file.type };
+                const scene: AppStoryboardScene = { src: base64, prompt: file.name };
                 
                 const generationItem: UploadedItem['generationItem'] = {
                     prompt: `Uploaded: ${file.name}`,
@@ -2323,7 +2216,7 @@ const App: React.FC = () => {
                     videoStates: [{
                         status: 'idle' as const, clips: [], currentClipIndex: -1, error: null, loadingMessage: '',
                         showScriptInput: false, scriptPrompt: '', voiceoverMode: 'tts', voiceoverFile: null,
-                        speaker: 'Narrator', cameraMovement: 'Static Hold', useLipSync: false
+                        speaker: 'Narrator', cameraMovement: 'Static Hold'
                     }],
                     mimeType: file.type,
                     detectedCharacters: [],
@@ -2386,7 +2279,6 @@ const App: React.FC = () => {
                 error: null,
                 isGenerating: false,
                 isRegenerating: false,
-                mimeType: file.type // Store MIME type for correct rendering
             };
     
             const newVideoState: VideoState = {
@@ -2401,7 +2293,6 @@ const App: React.FC = () => {
                 voiceoverFile: null,
                 speaker: 'Narrator',
                 cameraMovement: 'Static Hold',
-                useLipSync: false,
             };
     
             const newHistoryItem: GenerationItem = {
@@ -2606,21 +2497,17 @@ const App: React.FC = () => {
                 <div className="flex items-center justify-between">
                     <h1 className="text-2xl font-bold text-indigo-400 tracking-tight">Story Weaver</h1>
                     {/* Daily Usage Stats moved to header */}
-                     <button 
-                        onClick={() => setShowUsageModal(true)}
-                        className="flex items-center gap-3 bg-gray-900/50 px-3 py-1.5 rounded-full border border-gray-700/50 hover:bg-gray-800 hover:border-gray-500 transition-all cursor-pointer group"
-                        title="View Usage & Billing"
-                    >
+                     <div className="flex items-center gap-3 bg-gray-900/50 px-3 py-1.5 rounded-full border border-gray-700/50">
                         <div className="text-center">
-                            <span className="text-[10px] text-gray-400 block leading-none group-hover:text-gray-300">IMG</span>
+                            <span className="text-[10px] text-gray-400 block leading-none">IMG</span>
                             <span className="text-xs font-bold text-white">{dailyCounts.images}</span>
                         </div>
                         <div className="w-px h-6 bg-gray-700"></div>
                         <div className="text-center">
-                            <span className="text-[10px] text-gray-400 block leading-none group-hover:text-gray-300">VID</span>
+                            <span className="text-[10px] text-gray-400 block leading-none">VID</span>
                             <span className="text-xs font-bold text-white">{dailyCounts.videos}</span>
                         </div>
-                    </button>
+                    </div>
                 </div>
                 
                 <button 
@@ -2770,8 +2657,8 @@ const App: React.FC = () => {
                             onChange={(e) => setVideoModel(e.target.value)}
                             className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
                         >
-                            <option value="veo-2.0-generate-preview">Veo 2 Fast</option>
-                            <option value="veo-3.1-fast-generate-preview">Veo 3.1 Fast</option>
+                            <option value="veo-2-generate">Veo 2 (Legacy)</option>
+                            <option value="veo-3.1-fast-generate-preview">Veo 3.1 (Fast)</option>
                             <option value="veo-3.1-generate-preview">Veo 3.1 (High Quality)</option>
                         </select>
                     </div>
@@ -2994,10 +2881,9 @@ const App: React.FC = () => {
                                                 <img 
                                                     src={`data:${item.mimeType};base64,${item.generationItem.imageSet[0].src}`} 
                                                     alt={item.generationItem.prompt} 
-                                                    className="w-full h-auto object-cover cursor-zoom-in"
-                                                    onClick={() => setZoomedImage(`data:${item.mimeType};base64,${item.generationItem.imageSet[0].src}`)}
+                                                    className="w-full h-auto object-cover"
                                                 />
-                                                <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 pointer-events-none group-hover:pointer-events-auto">
+                                                <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2">
                                                     <button onClick={() => addUploadedToStoryboard(item)} className="px-3 py-1 bg-indigo-600 text-white text-xs font-bold rounded">Add to Storyboard</button>
                                                     <button onClick={() => setUploadedItems(prev => prev.filter(up => up.id !== item.id))} className="p-2 text-gray-300 hover:text-red-500"><TrashIcon className="w-4 h-4" /></button>
                                                 </div>
@@ -3019,12 +2905,7 @@ const App: React.FC = () => {
                                                         <p className="text-xs mt-2 text-gray-400">{scene.isGenerating ? 'Generating...' : 'Processing...'}</p>
                                                     </div>
                                                 ) : scene.src ? (
-                                                    <img 
-                                                        src={`data:${scene.mimeType || 'image/png'};base64,${scene.src}`} 
-                                                        alt={scene.prompt} 
-                                                        className="w-full h-full object-contain cursor-zoom-in" 
-                                                        onClick={() => setZoomedImage(`data:${scene.mimeType || 'image/png'};base64,${scene.src}`)}
-                                                    />
+                                                    <img src={`data:image/png;base64,${scene.src}`} alt={scene.prompt} className="w-full h-full object-contain" />
                                                 ) : (
                                                     <div className="text-center p-4 text-red-400">
                                                         <XCircleIcon className="w-8 h-8 mx-auto mb-2" />
@@ -3033,7 +2914,7 @@ const App: React.FC = () => {
                                                 )}
                                                  <div className="absolute top-2 right-2">
                                                     {scene.src && (
-                                                        <a href={`data:${scene.mimeType || 'image/png'};base64,${scene.src}`} download={`scene_${index + 1}.${(scene.mimeType || 'image/png').split('/')[1]}`} className="p-1 bg-black/50 text-white rounded hover:bg-indigo-600"><DownloadIcon className="w-4 h-4" /></a>
+                                                        <a href={`data:image/png;base64,${scene.src}`} download={`scene_${index + 1}.png`} className="p-1 bg-black/50 text-white rounded hover:bg-indigo-600"><DownloadIcon className="w-4 h-4" /></a>
                                                     )}
                                                 </div>
                                             </div>
@@ -3054,16 +2935,7 @@ const App: React.FC = () => {
                                                         <button onClick={() => handleRegenerateScene(currentGenerationItem.id, index)} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded" title="Regenerate"><RefreshIcon className="w-4 h-4" /></button>
                                                     </div>
                                                 </div>
-                                                <div className="flex justify-between items-start gap-2 mb-3 group relative">
-                                                    <p className="text-xs text-gray-400 line-clamp-2 cursor-help" title={scene.prompt}>{scene.prompt}</p>
-                                                    <button 
-                                                        onClick={() => handleCopyToClipboard(scene.prompt, `prompt-${currentGenerationItem.id}-${index}`)}
-                                                        className="text-gray-500 hover:text-white shrink-0 p-1 rounded hover:bg-gray-700 transition-colors opacity-0 group-hover:opacity-100"
-                                                        title="Copy Prompt"
-                                                    >
-                                                        {copiedId === `prompt-${currentGenerationItem.id}-${index}` ? <CheckIcon className="w-3 h-3 text-green-500"/> : <ClipboardIcon className="w-3 h-3"/>}
-                                                    </button>
-                                                </div>
+                                                <p className="text-xs text-gray-400 line-clamp-2 mb-3" title={scene.prompt}>{scene.prompt}</p>
                                                 
                                                 {scene.src && !scene.isRegenerating && (
                                                     <button 
@@ -3135,22 +3007,6 @@ const App: React.FC = () => {
                                                                     </div>
                                                                 )}
                                                             </div>
-                                                        </div>
-
-                                                        {/* Lip Sync Toggle */}
-                                                        <div className="flex items-center justify-between">
-                                                            <span className="text-[10px] font-bold text-gray-500 uppercase">Lip Sync</span>
-                                                            <button 
-                                                                onClick={() => toggleLipSync(currentGenerationItem.id, index)}
-                                                                className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900 ${currentGenerationItem.videoStates[index].useLipSync ? 'bg-indigo-600' : 'bg-gray-700'}`}
-                                                                title="Simulate lip-sync by prompting the model for mouth movements"
-                                                            >
-                                                                <span
-                                                                    className={`${
-                                                                        currentGenerationItem.videoStates[index].useLipSync ? 'translate-x-4' : 'translate-x-1'
-                                                                    } inline-block h-2.5 w-2.5 transform rounded-full bg-white transition-transform`}
-                                                                />
-                                                            </button>
                                                         </div>
 
                                                         {currentGenerationItem.videoStates[index].status === 'loading' ? (
@@ -3329,100 +3185,6 @@ const App: React.FC = () => {
                 </div>
             )}
             
-            {showUsageModal && (
-                <div className="fixed inset-0 bg-black/90 z-[70] flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setShowUsageModal(false)}>
-                    <div className="bg-gray-800 rounded-2xl w-full max-w-lg shadow-2xl border border-gray-700 overflow-hidden" onClick={(e) => e.stopPropagation()}>
-                        <div className="p-6 border-b border-gray-700 bg-gray-900 flex justify-between items-center">
-                            <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                                <ChartBarIcon className="w-6 h-6 text-indigo-500" />
-                                Usage & Limits
-                            </h3>
-                            <button onClick={() => setShowUsageModal(false)} className="text-gray-500 hover:text-white transition-colors">
-                                <XIcon className="w-6 h-6" />
-                            </button>
-                        </div>
-                        <div className="p-6 space-y-6">
-                            <div className="p-4 bg-gray-900/50 border border-gray-700 rounded-lg">
-                                <h4 className="text-sm font-bold text-gray-300 mb-4 uppercase tracking-wider">Today's Usage</h4>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="text-center p-4 bg-gray-800 rounded-lg border border-gray-700">
-                                        <span className="block text-2xl font-bold text-white mb-1">{dailyCounts.images}</span>
-                                        <span className="text-xs text-gray-400">Images Generated</span>
-                                    </div>
-                                    <div className="text-center p-4 bg-gray-800 rounded-lg border border-gray-700">
-                                        <span className="block text-2xl font-bold text-white mb-1">{dailyCounts.videos}</span>
-                                        <span className="text-xs text-gray-400">Videos Generated</span>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <div>
-                                <div className="flex items-center justify-between mb-2">
-                                    <h4 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Set Daily Limits</h4>
-                                    <div className="flex items-center gap-2">
-                                        <label className="text-xs text-gray-400">{dailyLimits.isEnabled ? 'Enabled' : 'Disabled'}</label>
-                                        <button 
-                                            onClick={toggleLimits}
-                                            className={`w-10 h-5 rounded-full relative transition-colors ${dailyLimits.isEnabled ? 'bg-indigo-600' : 'bg-gray-600'}`}
-                                        >
-                                            <span className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform ${dailyLimits.isEnabled ? 'translate-x-5' : ''}`} />
-                                        </button>
-                                    </div>
-                                </div>
-                                <div className={`space-y-3 transition-opacity ${dailyLimits.isEnabled ? 'opacity-100' : 'opacity-50 pointer-events-none'}`}>
-                                    <div className="flex items-center justify-between bg-gray-900/30 p-3 rounded border border-gray-700/50">
-                                        <span className="text-sm text-gray-300">Max Images / Day</span>
-                                        <input 
-                                            type="number" 
-                                            value={dailyLimits.maxImages} 
-                                            onChange={(e) => handleLimitChange('maxImages', parseInt(e.target.value, 10))}
-                                            className="w-20 bg-gray-800 border border-gray-600 rounded p-1 text-center text-sm focus:border-indigo-500"
-                                        />
-                                    </div>
-                                    <div className="flex items-center justify-between bg-gray-900/30 p-3 rounded border border-gray-700/50">
-                                        <span className="text-sm text-gray-300">Max Videos / Day</span>
-                                        <input 
-                                            type="number" 
-                                            value={dailyLimits.maxVideos} 
-                                            onChange={(e) => handleLimitChange('maxVideos', parseInt(e.target.value, 10))}
-                                            className="w-20 bg-gray-800 border border-gray-600 rounded p-1 text-center text-sm focus:border-indigo-500"
-                                        />
-                                    </div>
-                                </div>
-                                <p className="text-[10px] text-gray-500 mt-2 italic">
-                                    Limits are stored locally on this device.
-                                </p>
-                            </div>
-
-                            <div className="pt-4 border-t border-gray-700">
-                                <h4 className="text-sm font-bold text-gray-300 mb-2 uppercase tracking-wider">Billing & Costs</h4>
-                                <p className="text-xs text-gray-400 mb-4">
-                                    For security, billing details cannot be accessed via the API key. Please check your costs directly on Google Cloud.
-                                </p>
-                                <div className="flex gap-3">
-                                    <a 
-                                        href="https://console.cloud.google.com/billing" 
-                                        target="_blank" 
-                                        rel="noopener noreferrer"
-                                        className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold rounded text-center transition-colors"
-                                    >
-                                        Google Cloud Billing
-                                    </a>
-                                    <a 
-                                        href="https://aistudio.google.com/app/plan_information" 
-                                        target="_blank" 
-                                        rel="noopener noreferrer"
-                                        className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold rounded text-center transition-colors"
-                                    >
-                                        AI Studio Plan
-                                    </a>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-
             {isAngleModalOpen && angleSelectionTarget && (
                 <div className="fixed inset-0 bg-black/90 z-[60] flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setIsAngleModalOpen(false)}>
                     <div className="bg-gray-900 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl border border-gray-700 overflow-hidden" onClick={(e) => e.stopPropagation()}>
@@ -3659,9 +3421,6 @@ const App: React.FC = () => {
                                                         <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">VISUAL PROMPT</label>
                                                         <div className="flex gap-2">
                                                             <button onClick={() => handleSceneLockToggle(scene.id, 'description')} className="text-gray-500 hover:text-gray-300 transition-colors">{scene.isDescriptionLocked ? <LockClosedIcon className="w-3 h-3" /> : <LockOpenIcon className="w-3 h-3" />}</button>
-                                                            <button onClick={() => handleCopyToClipboard(scene.imageDescription, `visual-${scene.id}`)} className="text-gray-500 hover:text-green-400 transition-colors" title="Copy Visual Prompt">
-                                                                {copiedId === `visual-${scene.id}` ? <CheckIcon className="w-3 h-3 text-green-500"/> : <ClipboardIcon className="w-3 h-3"/>}
-                                                            </button>
                                                             <button onClick={() => handleGenerateSceneFromStorybook(index, scene.imageDescription)} className="text-indigo-400 hover:text-indigo-300 transition-colors" title="Generate Image"><SparklesIcon className="w-3 h-3" /></button>
                                                         </div>
                                                      </div>
@@ -3750,7 +3509,7 @@ const App: React.FC = () => {
                                     <p className="text-sm text-gray-200 line-clamp-2 mb-2">{item.prompt}</p>
                                     <div className="flex gap-1 overflow-hidden h-12">
                                         {item.imageSet.slice(0, 3).map((s, i) => (
-                                            s.src ? <img key={i} src={`data:${s.mimeType || 'image/png'};base64,${s.src}`} className="h-full w-auto rounded" alt="" /> : <div key={i} className="h-full w-12 bg-gray-700 rounded animate-pulse" />
+                                            s.src ? <img key={i} src={`data:image/png;base64,${s.src}`} className="h-full w-auto rounded" alt="" /> : <div key={i} className="h-full w-12 bg-gray-700 rounded animate-pulse" />
                                         ))}
                                     </div>
                                 </div>
@@ -3768,7 +3527,7 @@ const App: React.FC = () => {
                             {savedItems.map((item) => (
                                 <div key={item.id} className="p-3 bg-gray-800 rounded-lg border border-gray-700">
                                     <div className="aspect-video bg-black/50 rounded overflow-hidden mb-2 relative">
-                                        {item.scene.src && <img src={`data:${item.scene.mimeType || 'image/png'};base64,${item.scene.src}`} className="w-full h-full object-cover cursor-zoom-in" onClick={() => setZoomedImage(`data:${item.scene.mimeType || 'image/png'};base64,${item.scene.src}`)} alt="" />}
+                                        {item.scene.src && <img src={`data:image/png;base64,${item.scene.src}`} className="w-full h-full object-cover" alt="" />}
                                     </div>
                                     <p className="text-xs text-gray-300 line-clamp-2 mb-2">{item.originalPrompt}</p>
                                     <div className="flex gap-2">
@@ -3799,18 +3558,6 @@ const App: React.FC = () => {
                     {panel.content}
                 </div>
             ))}
-            
-            {zoomedImage && (
-                <div className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-4 cursor-zoom-out backdrop-blur-sm animate-in fade-in" onClick={() => setZoomedImage(null)}>
-                    <img src={zoomedImage} className="max-w-full max-h-full object-contain shadow-2xl rounded-sm" alt="Zoomed View" onClick={(e) => e.stopPropagation()}/>
-                    <button 
-                        className="absolute top-4 right-4 text-white/70 hover:text-white bg-black/50 hover:bg-black/70 rounded-full p-2 transition-colors"
-                        onClick={() => setZoomedImage(null)}
-                    >
-                        <XIcon className="w-8 h-8"/>
-                    </button>
-                </div>
-            )}
 
         </div>
     );
