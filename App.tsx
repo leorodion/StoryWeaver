@@ -202,6 +202,7 @@ const App: React.FC = () => {
     const abortControllerRef = useRef<AbortController | null>(null);
     const storybookScenesContainerRef = useRef<HTMLDivElement>(null);
     const storybookEndRef = useRef<HTMLDivElement>(null);
+    const overlayImageInputRef = useRef<HTMLInputElement>(null);
 
     const [prompt, setPrompt] = useState<string>('');
     const [imageCount, setImageCount] = useState<number>(1);
@@ -229,6 +230,7 @@ const App: React.FC = () => {
         generationId: number; 
         sceneIndex: number; 
         editPrompt: string;
+        overlayImage: { base64: string; mimeType: string; } | null;
         editHistory: string[];
         editHistoryIndex: number;
     }) | null>(null);
@@ -1991,6 +1993,7 @@ const App: React.FC = () => {
                 generationId,
                 sceneIndex,
                 editPrompt: '',
+                overlayImage: null,
                 isEditing: true,
                 previousSrc: scene.src,
                 editHistory: [scene.src],
@@ -2054,6 +2057,23 @@ const App: React.FC = () => {
         });
     };
 
+    const handleOverlayImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file || !editingScene) return;
+        e.target.value = '';
+    
+        try {
+            const base64 = await fileToBase64(file);
+            setEditingScene(prev => prev ? {
+                ...prev,
+                overlayImage: { base64, mimeType: file.type }
+            } : null);
+        } catch (err) {
+            console.error("Failed to load overlay image", err);
+            setEditingScene(prev => prev ? { ...prev, error: "Failed to load overlay image." } : null);
+        }
+    };
+
     const submitEdit = async () => {
         if (!editingScene || !editingScene.src) return;
     
@@ -2081,7 +2101,7 @@ const App: React.FC = () => {
              }
         }
         
-        if (!editingScene.editPrompt.trim() && !hasVisualMasks) return;
+        if (!editingScene.editPrompt.trim() && !hasVisualMasks && !editingScene.overlayImage) return;
     
         setEditingScene({ ...editingScene, isRegenerating: true, error: null });
         const signal = startOperation();
@@ -2096,8 +2116,9 @@ const App: React.FC = () => {
                 genre: generationItem.genre,
                 characters: generationItem.characters,
                 hasVisualMasks,
+                overlayImage: editingScene.overlayImage,
                 signal,
-                imageModel: generationItem.imageModel.includes('gemini') ? generationItem.imageModel : 'gemini-3-pro-image-preview'
+                imageModel: 'gemini-2.5-flash-image'
             });
     
             if (src && !error) {
@@ -3105,7 +3126,13 @@ const App: React.FC = () => {
                                     ref={editPromptTextAreaRef}
                                     value={editingScene.editPrompt}
                                     onChange={(e) => setEditingScene({ ...editingScene, editPrompt: e.target.value })}
-                                    placeholder={drawingMode === 'remove' ? "Describe what to remove (optional)..." : "Describe changes or what to generate in green areas..."}
+                                    placeholder={
+                                        editingScene.overlayImage
+                                            ? "Describe how to place the uploaded object..."
+                                            : drawingMode === 'remove'
+                                                ? "Describe what to remove (optional)..."
+                                                : "Describe changes or what to generate in green areas..."
+                                    }
                                     className="w-full h-24 p-2 bg-gray-900 border border-gray-700 rounded text-sm mb-2 resize-none focus:border-indigo-500"
                                 />
                             </div>
@@ -3113,15 +3140,26 @@ const App: React.FC = () => {
                             <div className="mb-4">
                                 <div className="flex justify-between items-center mb-2">
                                     <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Paint Tools</label>
-                                    {hasDrawn && (
-                                        <button
-                                            onClick={clearCanvas}
-                                            className="flex items-center gap-1 px-2 py-0.5 bg-gray-700/50 hover:bg-gray-700 rounded text-[10px] font-bold text-gray-400 border border-gray-600/50 transition-colors"
-                                            title="Clear all paint from the canvas"
+                                    <div className="flex items-center gap-2">
+                                        <button 
+                                            onClick={() => overlayImageInputRef.current?.click()}
+                                            className="flex items-center gap-1 px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-[10px] font-bold text-gray-300 border border-gray-600/50 transition-colors"
+                                            title="Upload image to composite"
                                         >
-                                            <RefreshIcon className="w-3 h-3" /> Clear
+                                            <UploadIcon className="w-3 h-3" /> Upload
                                         </button>
-                                    )}
+                                        <input type="file" ref={overlayImageInputRef} className="hidden" onChange={handleOverlayImageUpload} accept="image/*" />
+
+                                        {hasDrawn && (
+                                            <button
+                                                onClick={clearCanvas}
+                                                className="flex items-center gap-1 px-2 py-0.5 bg-gray-700/50 hover:bg-gray-700 rounded text-[10px] font-bold text-gray-400 border border-gray-600/50 transition-colors"
+                                                title="Clear all paint from the canvas"
+                                            >
+                                                <RefreshIcon className="w-3 h-3" /> Clear
+                                            </button>
+                                        )}
+                                    </div>
                                 </div>
                                 <div className="flex gap-1 bg-gray-900 p-1 rounded-lg border border-gray-700 h-9">
                                     <button
@@ -3164,6 +3202,18 @@ const App: React.FC = () => {
                                     </button>
                                 </div>
                             </div>
+                            
+                            {editingScene.overlayImage && (
+                                <div className="mb-4">
+                                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">Uploaded Object</label>
+                                    <div className="relative w-24 h-24 bg-gray-900 rounded-md overflow-hidden p-1 border border-gray-700">
+                                        <img src={`data:${editingScene.overlayImage.mimeType};base64,${editingScene.overlayImage.base64}`} alt="Uploaded object" className="w-full h-full object-contain" />
+                                        <button onClick={() => setEditingScene(prev => prev ? { ...prev, overlayImage: null } : null)} className="absolute top-0 right-0 p-0.5 bg-black/60 text-white rounded-bl-md hover:bg-red-600 transition-colors">
+                                            <XIcon className="w-3 h-3" />
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
 
                             {renderCharacterInserter('edit')}
                             
@@ -3178,11 +3228,11 @@ const App: React.FC = () => {
                                 ) : (
                                     <button
                                         onClick={submitEdit}
-                                        disabled={(!editingScene.editPrompt.trim() && !hasDrawn)}
+                                        disabled={(!editingScene.editPrompt.trim() && !hasDrawn && !editingScene.overlayImage)}
                                         className="w-full py-3 bg-indigo-600 text-white font-bold rounded hover:bg-indigo-500 disabled:bg-gray-600 disabled:cursor-not-allowed shadow-lg flex items-center justify-center gap-2"
                                     >
                                         <SparklesIcon className="w-4 h-4" />
-                                        {hasDrawn ? 'Apply Visual Edit' : 'Apply Text Edit'}
+                                        {hasDrawn ? 'Apply Visual Edit' : (editingScene.overlayImage ? 'Composite Image' : 'Apply Text Edit')}
                                     </button>
                                 )}
                                 {editingScene.error && <p className="mt-2 text-xs text-red-400 bg-red-900/20 p-2 rounded">{editingScene.error}</p>}
