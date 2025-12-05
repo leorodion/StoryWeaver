@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type, GenerateContentResponse, Modality, Part } from "@google/genai";
 import { base64ToBytes } from "../utils/fileUtils";
 import { parseErrorMessage } from "../utils/errorUtils";
@@ -64,6 +65,7 @@ export type EditImageParams = {
   characters: Character[];
   hasVisualMasks?: boolean;
   signal?: AbortSignal;
+  imageModel?: string;
 };
 
 export const PREBUILT_VOICES = ['Kore', 'Puck', 'Zephyr', 'Charon', 'Fenrir'];
@@ -245,45 +247,37 @@ export async function generateCharacterVisual(
     style: string,
     signal?: AbortSignal
 ): Promise<{ src: string | null; error: string | null }> {
-    const ai = getAiClient();
     
-    // Get detailed style instructions
-    const styleInstructions = getStyleInstructions(style);
+    // Construct a prompt that describes a single, full-body shot of the character in a natural setting.
+    // This provides a more organic and visually consistent result compared to a sterile character sheet.
+    const prompt = `Full-body portrait of a character named ${characterName}. ${characterDescription}. The character is standing in a simple, neutral setting that complements their appearance and the overall style.`;
 
-    // Construct a specific prompt for a character sheet/visualization
-    const prompt = `Create a clean, high-fidelity character design sheet.
+    // Create a temporary Character object for the generation function.
+    const characterToGenerate: Character = {
+        id: -1, // This is a temporary object, so the ID doesn't matter.
+        name: characterName,
+        description: characterDescription,
+        imagePreview: null,
+        originalImageBase64: null,
+        originalImageMimeType: null,
+        detectedImageStyle: null,
+        isDescribing: false,
+    };
     
-**Character Name:** ${characterName}
-**Description:** ${characterDescription}
-**Style:** ${styleInstructions}
-
-**CRITICAL INSTRUCTIONS:**
-1.  **FULL BODY SHOT IS MANDATORY:** You MUST generate a complete full-body image of the character. The entire character MUST be visible from the top of the head to the bottom of the shoes. Do NOT crop the head. Do NOT crop the feet at the ankles or knees. The character must be standing.
-2.  **Framing:** Use a wide enough vertical framing to ensure the entire body fits comfortably with a small margin of white space above the head and below the feet.
-3.  **Background:** The background MUST be a plain, pure white background (#FFFFFF). No scenery, no noise, no shadows other than a small ground contact shadow.
-4.  **Focus:** Focus entirely on the character design, clothing details, and facial features.
-5.  **Racial Mandate:** As per the character description. If description is ambiguous, assume Black African descent for consistency with the application's theme.
-`;
-
-    // Use image model to generate
-    try {
-        const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-            model: 'gemini-2.5-flash-image', // Fast model is good for this
-            contents: { parts: [{ text: prompt }] },
-            config: {
-                imageConfig: { aspectRatio: '3:4' } // Portrait aspect ratio for character sheets
-            }
-        }), undefined, signal);
-
-        for (const part of response.candidates?.[0]?.content?.parts || []) {
-            if (part.inlineData) {
-                return { src: part.inlineData.data, error: null };
-            }
-        }
-        return { src: null, error: "No image generated." };
-    } catch (error) {
-        return { src: null, error: parseErrorMessage(error) };
-    }
+    // Reuse the main image generation function to ensure the character visual
+    // is created with the same logic and style consistency as the main storyboard scenes.
+    return generateSingleImage(
+        prompt,
+        '3:4', // Use a portrait aspect ratio suitable for a full-body character shot.
+        style,
+        'General', // Genre is not critical for a single character visualization.
+        [characterToGenerate],
+        [characterToGenerate],
+        'gemini-2.5-flash-image', // Use a high-quality model for best results.
+        null,
+        null,
+        signal
+    );
 }
 
 export async function describeImageForConsistency(imageBase64: string, signal?: AbortSignal): Promise<string> {
@@ -653,16 +647,21 @@ export async function generateImageSet(
 
 async function analyzeEnvironmentForCameraPlacement(
     imageBase64: string,
-    angles: string[], // e.g., ['back', 'side']
+    angles: string[],
+    focusSubject: string,
     signal?: AbortSignal
 ): Promise<Record<string, string>> {
     const ai = getAiClient();
     const imagePart = { inlineData: { data: imageBase64, mimeType: 'image/png' } };
 
-    const prompt = `You are a virtual cinematographer analyzing a scene to find the best camera placements. Analyze the provided image. Your task is to determine the most natural camera positions to achieve specific views of the main subject.
+    const focusInstruction = focusSubject === 'General Scene'
+        ? 'Your task is to determine the most natural camera positions to achieve specific views of the main subject.'
+        : `Your task is to determine the most natural camera positions to achieve specific views where the camera is focused on the character named '${focusSubject}'. The framing should prioritize this character.`;
+
+    const prompt = `You are a virtual cinematographer analyzing a scene to find the best camera placements. Analyze the provided image. ${focusInstruction}
 
     **Analysis Steps:**
-    1.  **Identify Subject & Orientation:** Locate the main character and note the direction they are facing.
+    1.  **Identify Subject & Orientation:** Locate the main character(s) and note the direction they are facing. If a specific focus subject is named, prioritize them.
     2.  **Describe Environment:** Briefly map out the key objects and walls around the subject.
     3.  **Determine Placements:** Based on the environment, describe the most logical and physically possible camera placements to achieve the requested views: ${angles.join(', ')}. The camera cannot be placed inside solid objects.
 
@@ -715,6 +714,7 @@ export async function generateCameraAnglesFromImage(
       imageModel: string;
     },
     angleNames: string[],
+    focusSubject: string,
     onProgress: (message: string) => void,
     signal?: AbortSignal
   ): Promise<StoryboardScene[]> {
@@ -742,7 +742,7 @@ export async function generateCameraAnglesFromImage(
     let cameraPrompts: Record<string, string> = {};
 
     if (angleNames.length > 0) {
-        cameraPrompts = await analyzeEnvironmentForCameraPlacement(extendedImageSrc, angleNames, signal);
+        cameraPrompts = await analyzeEnvironmentForCameraPlacement(extendedImageSrc, angleNames, focusSubject, signal);
     }
 
     const generatedScenes: StoryboardScene[] = [];
@@ -789,7 +789,7 @@ export async function generateCameraAnglesFromImage(
 }
 
 export async function editImage(params: EditImageParams): Promise<{ src: string | null; error: string | null }> {
-    const { imageBase64, mimeType, editPrompt, aspectRatio, imageStyle, genre, characters, hasVisualMasks, signal } = params;
+    const { imageBase64, mimeType, editPrompt, aspectRatio, imageStyle, genre, characters, hasVisualMasks, signal, imageModel } = params;
     const ai = getAiClient();
     
     // Get detailed style instructions
@@ -870,8 +870,11 @@ ${otherCharacters.map(c => `- **${c.name}**: ${c.description}`).join('\n')}
         finalPromptText += `\n${racialMandate}\n${otherCharacterBlock}`;
         contentsParts.push({ text: finalPromptText });
 
+        // Determine model. Default to flash if not provided.
+        const modelToUse = imageModel || 'gemini-2.5-flash-image';
+
         const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-            model: 'gemini-2.5-flash-image',
+            model: modelToUse,
             contents: { parts: contentsParts },
             config: {
                 imageConfig: { aspectRatio: aspectRatio },
@@ -1210,8 +1213,8 @@ export async function generateStructuredStory(
                         items: {
                             type: Type.OBJECT,
                             properties: {
-                                imageDescription: { type: Type.STRING, description: "A concise visual prompt for an AI image generator for this scene." },
-                                narration: { type: Type.STRING, description: "The concise narrative or dialogue for this scene, with dialogue formatted as 'Character: text'." }
+                                imageDescription: { type: Type.STRING },
+                                narration: { type: Type.STRING }
                             },
                             required: ['imageDescription', 'narration']
                         }
@@ -1355,18 +1358,18 @@ export async function generateStorybookSpeech(
     signal?: AbortSignal
 ): Promise<string | null> {
     const ai = getAiClient();
-    if (!script) return null;
+    if (!script.trim()) {
+        return null;
+    }
 
-    let style = `with a ${expression.toLowerCase()} tone`;
+    let promptPrefix = '';
     if (accent === 'Nigerian English') {
-        style += ` and a distinct, authentic Nigerian English accent`;
+        promptPrefix = `As a Nigerian voice actor with a ${expression.toLowerCase()} tone, say the following in a clear Nigerian English accent: `;
+    } else { // Global (Neutral)
+        promptPrefix = `Say with a ${expression.toLowerCase()} tone: `;
     }
-
-    let ttsPrompt = `Say ${style}: ${script}`;
-    // A simple check to see if it's likely a character name or a generic voice
-    if (PREBUILT_VOICES.map(v => v.toLowerCase()).indexOf(voice.toLowerCase()) === -1) {
-         ttsPrompt = `As the character ${voice}, say ${style}: ${script}`
-    }
+    
+    const ttsPrompt = `${promptPrefix} "${script}"`;
 
     try {
         const ttsResponse: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
@@ -1379,10 +1382,11 @@ export async function generateStorybookSpeech(
                 },
             },
         }), undefined, signal);
+
         const base64Audio = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
         return base64Audio || null;
     } catch (err) {
         console.error("Storybook TTS generation failed:", err);
-        throw new Error(`TTS generation failed: ${parseErrorMessage(err)}`);
+        throw err;
     }
 }

@@ -1,5 +1,6 @@
+
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { generateImageSet, generateVideoFromScene, StoryboardScene, generatePromptFromAudio, generateCharacterDescription, AudioOptions, generateSingleImage, Character, generateCameraAnglesFromImage, editImage, EditImageParams, CAMERA_MOVEMENT_PROMPTS, generateStructuredStory, Storybook, generateScenesFromNarrative, generateStorybookSpeech, PREBUILT_VOICES, VOICE_EXPRESSIONS, StorybookParts, ACCENT_OPTIONS, CAMERA_ANGLE_OPTIONS, generateCharacterVisual } from './services/geminiService';
+import { generateImageSet, generateVideoFromScene, StoryboardScene, generatePromptFromAudio, generateCharacterDescription, AudioOptions, generateSingleImage, Character, generateCameraAnglesFromImage, editImage, EditImageParams, CAMERA_MOVEMENT_PROMPTS, generateStructuredStory, Storybook, generateScenesFromNarrative, generateStorybookSpeech, PREBUILT_VOICES, VOICE_EXPRESSIONS, StorybookParts, ACCENT_OPTIONS, CAMERA_ANGLE_OPTIONS, generateCharacterVisual, describeImageForConsistency } from './services/geminiService';
 import { fileToBase64, base64ToBytes, compressImageBase64, pcmToWavBlob } from './utils/fileUtils';
 import { parseErrorMessage } from './utils/errorUtils';
 import { SparklesIcon, LoaderIcon, DownloadIcon, VideoIcon, PlusCircleIcon, ChevronLeftIcon, ChevronRightIcon, UserPlusIcon, XCircleIcon, RefreshIcon, TrashIcon, XIcon, BookmarkIcon, HistoryIcon, UploadIcon, CameraIcon, UndoIcon, MusicalNoteIcon, BookOpenIcon, ClipboardIcon, CheckIcon, DocumentMagnifyingGlassIcon, SpeakerWaveIcon, ChevronDownIcon, LockClosedIcon, LockOpenIcon, ClapperboardIcon, SaveIcon, StopIcon, ChartBarIcon } from './components/Icons';
@@ -198,7 +199,7 @@ const App: React.FC = () => {
     const [aspectRatio, setAspectRatio] = useState<string>('16:9');
     const [imageStyle, setImageStyle] = useState<string>('Nigerian Cartoon');
     const [imageModel, setImageModel] = useState<string>('gemini-3-pro-image-preview');
-    const [videoModel, setVideoModel] = useState<string>('veo-3.1-fast-generate-preview');
+    const [videoModel, setVideoModel] = useState<string>('veo-2-fast-generate-preview');
     const [genre, setGenre] = useState<string>('General');
     const [appStatus, setAppStatus] = useState<AppStatus>({ status: 'idle', error: null });
     const [statusMessage, setStatusMessage] = useState<string>('');
@@ -262,7 +263,9 @@ const App: React.FC = () => {
     
     const [isAngleModalOpen, setIsAngleModalOpen] = useState(false);
     const [angleSelectionTarget, setAngleSelectionTarget] = useState<{ generationId: number; sceneIndex: number } | null>(null);
-    const [selectedAngles, setSelectedAngles] = useState<string[]>([]);
+    const [selectedAngle, setSelectedAngle] = useState<string | null>(null);
+    const [focusSubject, setFocusSubject] = useState<string>('General Scene');
+    const [charactersForAngleModal, setCharactersForAngleModal] = useState<Character[]>([]);
     const initialUploadFileInputRef = useRef<HTMLInputElement>(null);
 
     // Canvas drawing states for editing
@@ -271,6 +274,8 @@ const App: React.FC = () => {
     const [hasDrawn, setHasDrawn] = useState(false);
     const isDrawingRef = useRef(false);
     const lastPosRef = useRef<{ x: number; y: number } | null>(null);
+    const currentPathRef = useRef<Array<{ x: number; y: number }>>([]);
+    const [brushSize, setBrushSize] = useState(30);
 
     const checkApiKey = useCallback(async () => {
         if ((window as any).aistudio && (window as any).aistudio.hasSelectedApiKey) {
@@ -562,6 +567,7 @@ const App: React.FC = () => {
         isDrawingRef.current = true;
         const coords = getCoordinates(e, canvasRef.current);
         lastPosRef.current = coords;
+        currentPathRef.current = [coords]; // Start a new path
         
         // Prevent scrolling on touch
         if ('touches' in e) e.preventDefault();
@@ -575,13 +581,14 @@ const App: React.FC = () => {
         if (!ctx) return;
         
         const coords = getCoordinates(e, canvasRef.current);
+        currentPathRef.current.push(coords); // Add point to path
         
         ctx.beginPath();
         ctx.moveTo(lastPosRef.current.x, lastPosRef.current.y);
         ctx.lineTo(coords.x, coords.y);
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
-        ctx.lineWidth = 30; // Fixed brush size for now, relative to image resolution
+        ctx.lineWidth = brushSize; // Use state for brush size
         
         if (drawingMode === 'add') {
             ctx.strokeStyle = 'rgba(0, 255, 0, 0.5)'; // Green for Add
@@ -597,8 +604,41 @@ const App: React.FC = () => {
     };
 
     const stopDrawing = () => {
+        if (!isDrawingRef.current || !canvasRef.current) return;
         isDrawingRef.current = false;
         lastPosRef.current = null;
+    
+        // Lasso fill logic
+        const path = currentPathRef.current;
+        if (path.length > 10) { // Require a minimum path length for a loop
+            const startPoint = path[0];
+            const endPoint = path[path.length - 1];
+            const dx = endPoint.x - startPoint.x;
+            const dy = endPoint.y - startPoint.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+    
+            // If end is close to start, it's a closed loop
+            if (distance < 40) { // Threshold in pixels
+                const ctx = canvasRef.current.getContext('2d');
+                if (ctx) {
+                    if (drawingMode === 'add') {
+                        ctx.fillStyle = 'rgba(0, 255, 0, 0.5)';
+                    } else if (drawingMode === 'remove') {
+                        ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+                    }
+    
+                    ctx.beginPath();
+                    ctx.moveTo(startPoint.x, startPoint.y);
+                    for (let i = 1; i < path.length; i++) {
+                        ctx.lineTo(path[i].x, path[i].y);
+                    }
+                    ctx.closePath();
+                    ctx.fill();
+                    setHasDrawn(true);
+                }
+            }
+        }
+        currentPathRef.current = []; // Clear path for next drawing action
     };
     
     const clearCanvas = () => {
@@ -1020,7 +1060,10 @@ const App: React.FC = () => {
                 return item;
             }));
 
-            if (src) incrementCount('images', 1);
+            if (src) {
+                incrementCount('images', 1);
+                setZoomedImage(src);
+            }
             setAppStatus({ status: 'idle', error: null });
             setStatusMessage('');
         } catch (error) {
@@ -1379,6 +1422,7 @@ const App: React.FC = () => {
                     isDescribing: false
                 } : c));
                 incrementCount('images', 1);
+                setZoomedImage(src);
             } else {
                 throw new Error(error || "Failed to generate character visual");
             }
@@ -1542,6 +1586,7 @@ const App: React.FC = () => {
 
             if (src) {
                 incrementCount('images', 1);
+                setZoomedImage(src);
             }
 
             setGenerationHistory(prev =>
@@ -1845,29 +1890,29 @@ const App: React.FC = () => {
     };
 
     const openAngleSelectionModal = (generationId: number, sceneIndex: number) => {
+        const generationItem = generationHistory.find(item => item.id === generationId);
+        if (generationItem) {
+            setCharactersForAngleModal(generationItem.characters || []);
+        } else {
+            setCharactersForAngleModal([]);
+        }
+    
         setAngleSelectionTarget({ generationId, sceneIndex });
-        setSelectedAngles([]);
+        setSelectedAngle(null);
+        setFocusSubject('General Scene');
         setIsAngleModalOpen(true);
     };
     
     const handleAngleSelection = (angleKey: string) => {
-        setSelectedAngles(prev => 
-            prev.includes(angleKey)
-                ? prev.filter(a => a !== angleKey)
-                : [...prev, angleKey]
-        );
+        setSelectedAngle(prev => (prev === angleKey ? null : angleKey));
     };
 
-    const handleSelectAllAngles = () => {
-        if (selectedAngles.length === CAMERA_ANGLE_OPTIONS.length) {
-            setSelectedAngles([]);
-        } else {
-            setSelectedAngles(CAMERA_ANGLE_OPTIONS.map(a => a.key));
-        }
+    const handleSyncCharactersForAngleModal = () => {
+        setCharactersForAngleModal(characters);
     };
 
     const handleGenerateCameraAngles = useCallback(async () => {
-        if (!angleSelectionTarget || selectedAngles.length === 0) {
+        if (!angleSelectionTarget || !selectedAngle) {
             setIsAngleModalOpen(false);
             return;
         }
@@ -1902,7 +1947,8 @@ const App: React.FC = () => {
                     characters: generationItem.characters,
                     imageModel: 'gemini-2.5-flash-image', 
                 },
-                selectedAngles,
+                [selectedAngle],
+                focusSubject,
                 (message) => setStatusMessage(message),
                 signal
             );
@@ -1960,9 +2006,9 @@ const App: React.FC = () => {
             setStatusMessage("");
             abortControllerRef.current = null;
             setAngleSelectionTarget(null);
-            setSelectedAngles([]);
+            setSelectedAngle(null);
         }
-    }, [generationHistory, incrementCount, angleSelectionTarget, selectedAngles, appStatus.error]);
+    }, [generationHistory, incrementCount, angleSelectionTarget, selectedAngle, focusSubject]);
     
     const startEditing = (generationId: number, sceneIndex: number) => {
         const generationItem = generationHistory.find(item => item.id === generationId);
@@ -2083,11 +2129,13 @@ const App: React.FC = () => {
                 genre: generationItem.genre,
                 characters: generationItem.characters,
                 hasVisualMasks, // Pass flag to service
-                signal
+                signal,
+                imageModel: generationItem.imageModel.includes('gemini') ? generationItem.imageModel : 'gemini-3-pro-image-preview'
             });
 
             if (src && !error) {
                 incrementCount('images', 1);
+                setZoomedImage(src);
                 
                 setEditingScene(prev => {
                     if (!prev) return null;
@@ -2657,6 +2705,7 @@ const App: React.FC = () => {
                             onChange={(e) => setVideoModel(e.target.value)}
                             className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
                         >
+                            <option value="veo-2-fast-generate-preview">Veo 2 (Fast)</option>
                             <option value="veo-2-generate">Veo 2 (Legacy)</option>
                             <option value="veo-3.1-fast-generate-preview">Veo 3.1 (Fast)</option>
                             <option value="veo-3.1-generate-preview">Veo 3.1 (High Quality)</option>
@@ -3107,6 +3156,7 @@ const App: React.FC = () => {
                             </div>
 
                             <div className="mb-4">
+                                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">Paint Tools</label>
                                 <div className="flex gap-1 bg-gray-900 p-1 rounded-lg border border-gray-700 h-9">
                                     <button
                                         onClick={() => setDrawingMode('remove')}
@@ -3128,7 +3178,7 @@ const App: React.FC = () => {
                                             ? 'bg-green-900/40 text-green-400 ring-1 ring-green-500' 
                                             : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
                                         }`}
-                                        title="Paint Green to Add"
+                                        title="Paint Green to Add / Lasso Fill"
                                     >
                                         <PlusCircleIcon className="w-3.5 h-3.5" />
                                         <span className="text-[9px] font-bold uppercase">ADD</span>
@@ -3147,6 +3197,17 @@ const App: React.FC = () => {
                                         <span className="text-[9px] font-bold uppercase">VIEW</span>
                                     </button>
                                 </div>
+                                
+                                {drawingMode !== 'none' && (
+                                    <div className="flex items-center justify-between mt-2">
+                                        <span className="text-xs text-gray-400">Brush Size:</span>
+                                        <div className="flex items-center gap-2">
+                                            <button onClick={() => setBrushSize(s => Math.max(5, s - 5))} className="px-2 py-0.5 bg-gray-700 rounded text-lg font-bold">-</button>
+                                            <span className="text-sm font-mono w-6 text-center">{brushSize}</span>
+                                            <button onClick={() => setBrushSize(s => Math.min(100, s + 5))} className="px-2 py-0.5 bg-gray-700 rounded text-lg font-bold">+</button>
+                                        </div>
+                                    </div>
+                                )}
                                 
                                 {hasDrawn && (
                                     <button 
@@ -3194,9 +3255,9 @@ const App: React.FC = () => {
                             <div>
                                 <h3 className="text-xl font-bold text-white flex items-center gap-2">
                                     <CameraIcon className="w-6 h-6 text-indigo-500" />
-                                    Select Camera Angles
+                                    Select Camera Angle
                                 </h3>
-                                <p className="text-sm text-gray-400 mt-1">Choose alternative perspectives to generate for this scene.</p>
+                                <p className="text-sm text-gray-400 mt-1">Choose an alternative perspective to generate for this scene.</p>
                             </div>
                             <button onClick={() => setIsAngleModalOpen(false)} className="text-gray-500 hover:text-white transition-colors">
                                 <XIcon className="w-6 h-6" />
@@ -3205,19 +3266,29 @@ const App: React.FC = () => {
 
                         {/* Content */}
                         <div className="p-6 overflow-y-auto bg-gray-900/50">
-                            <div className="flex justify-between items-center mb-4">
-                                <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">{selectedAngles.length} Selected</span>
-                                <button 
-                                    onClick={handleSelectAllAngles}
-                                    className="text-xs font-bold text-indigo-400 hover:text-indigo-300 transition-colors"
+                             <div className="mb-4">
+                                <div className="flex justify-between items-center">
+                                    <label htmlFor="focus-subject" className="text-xs font-bold text-gray-400 uppercase tracking-wider">Focus Subject</label>
+                                    <button onClick={handleSyncCharactersForAngleModal} className="text-indigo-400 hover:text-indigo-300 text-[10px] font-bold flex items-center gap-1">
+                                        <RefreshIcon className="w-3 h-3" /> Sync from Sidebar
+                                    </button>
+                                </div>
+                                <select
+                                    id="focus-subject"
+                                    value={focusSubject}
+                                    onChange={(e) => setFocusSubject(e.target.value)}
+                                    className="w-full mt-1 p-2 bg-gray-800 border border-gray-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition"
                                 >
-                                    {selectedAngles.length === CAMERA_ANGLE_OPTIONS.length ? 'Deselect All' : 'Select All'}
-                                </button>
+                                    <option value="General Scene">General Scene</option>
+                                    {charactersForAngleModal.map(char => (
+                                        <option key={char.id} value={char.name}>{char.name}</option>
+                                    ))}
+                                </select>
                             </div>
 
-                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-3 gap-4">
+                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-3 gap-4 mt-4">
                                 {CAMERA_ANGLE_OPTIONS.map((angle) => {
-                                    const isSelected = selectedAngles.includes(angle.key);
+                                    const isSelected = selectedAngle === angle.key;
                                     return (
                                         <div 
                                             key={angle.key} 
@@ -3257,11 +3328,11 @@ const App: React.FC = () => {
                             </button>
                             <button 
                                 onClick={handleGenerateCameraAngles} 
-                                disabled={selectedAngles.length === 0}
+                                disabled={!selectedAngle}
                                 className="px-6 py-2.5 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed transition-all shadow-lg shadow-indigo-900/20 flex items-center gap-2"
                             >
                                 <SparklesIcon className="w-4 h-4" />
-                                <span>Generate {selectedAngles.length > 0 ? `${selectedAngles.length} Shots` : ''}</span>
+                                <span>Generate Shot</span>
                             </button>
                         </div>
                     </div>
@@ -3479,7 +3550,6 @@ const App: React.FC = () => {
                                             ) : (
                                                 <button 
                                                     onClick={handleCreateStoryboardFromScript} 
-                                                    disabled={appStatus.status === 'loading'}
                                                     className="w-full max-w-md py-4 bg-gradient-to-r from-teal-600 to-teal-500 text-white font-bold rounded-xl shadow-lg hover:from-teal-500 hover:to-teal-400 flex items-center justify-center gap-3 transition-all transform hover:scale-[1.02]"
                                                 >
                                                     <SparklesIcon className="w-6 h-6" />
@@ -3558,7 +3628,11 @@ const App: React.FC = () => {
                     {panel.content}
                 </div>
             ))}
-
+            {zoomedImage && (
+                <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setZoomedImage(null)}>
+                    <img src={zoomedImage.startsWith('data:') ? zoomedImage : `data:image/png;base64,${zoomedImage}`} alt="Zoomed view" className="max-w-full max-h-full object-contain rounded-lg shadow-2xl animate-in fade-in zoom-in-75" />
+                </div>
+            )}
         </div>
     );
 };
