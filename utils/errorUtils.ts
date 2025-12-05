@@ -12,6 +12,10 @@ export function parseErrorMessage(error: unknown): string {
         return 'Aborted';
     }
 
+    if (errorMessage.includes('the caller does not have permission')) {
+        return "API Key error: Your selected key does not have permission for this model. Please select a key from a project with the Generative AI API enabled.";
+    }
+
     // Gemini API often returns a JSON string in the error message
     try {
         const parsed = JSON.parse(error.message);

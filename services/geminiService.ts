@@ -1,4 +1,5 @@
 
+
 import { GoogleGenAI, Type, GenerateContentResponse, Modality, Part } from "@google/genai";
 import { base64ToBytes } from "../utils/fileUtils";
 import { parseErrorMessage } from "../utils/errorUtils";
@@ -163,10 +164,8 @@ export const CAMERA_MOVEMENT_PROMPTS: { [key: string]: string } = {
 
 function getStyleInstructions(style: string): string {
     switch (style) {
-        case 'Nigerian Cartoon':
-            return `A vibrant 2D cartoon style inspired by Nigerian art. Characters are drawn as caricatures with expressive faces and large heads. They wear colorful traditional Nigerian attire like agbada, kaftans, or gele. The art uses bold, clean outlines and a simple, flat color palette, creating a lively and humorous feel. This is NOT a realistic or 3D style.`;
-        case 'Cartoon (Big Head)':
-            return `A funny 2D vector art cartoon in an Adobe Illustrator style. Characters have exaggerated proportions: a very large head, a tiny waist, and small legs. Use bold outlines and flat colors, avoiding 3D effects, shadows, or gradients.`;
+        case 'Afro-toon':
+            return `A vibrant 2D cartoon style inspired by Nigerian art. Characters are drawn with expressive faces and normal human proportions. They wear colorful traditional Nigerian attire like agbada, kaftans, or gele. The art uses bold, clean outlines and a simple, flat color palette, creating a lively and humorous feel. This is NOT a realistic or 3D style.`;
         case 'Realistic Photo':
             return `A hyper-realistic, cinematic photograph. 8k resolution, high fidelity, realistic skin textures, natural lighting, and true-to-life proportions. Shot on a professional 35mm camera. NOT a drawing, NOT a painting, NOT a 3D render, NOT anime.`;
         case '3D Render':
@@ -196,7 +195,7 @@ function getStyleInstructions(style: string): string {
 export async function generateCharacterDescription(imageBase64: string, mimeType: string, signal?: AbortSignal): Promise<{ description: string; detectedStyle: string }> {
     const ai = getAiClient();
     const imagePart = { inlineData: { data: imageBase64, mimeType }};
-    const prompt = `Analyze the person in the image. Generate a concise, single-line, comma-separated list of descriptive tags for an AI image generator to ensure high-fidelity recreation. Also, identify the primary visual art style of the character in the image from the following options: "Nigerian Cartoon", "Cartoon (Big Head)", "Illustration", "3D Render", "Realistic Photo", "Oil Painting", "Pixel Art", "2D Flat", "Anime", "Clip Art", "Video Game", "Pastel Sketch", "Dark Fantasy", "Cyberpunk", "Steampunk", "Watercolor", "Art Nouveau". If the style doesn't fit exactly, choose the closest or provide a brief custom description.
+    const prompt = `Analyze the person in the image. Generate a concise, single-line, comma-separated list of descriptive tags for an AI image generator to ensure high-fidelity recreation. Also, identify the primary visual art style of the character in the image from the following options: "Afro-toon", "Illustration", "3D Render", "Realistic Photo", "Oil Painting", "Pixel Art", "2D Flat", "Anime", "Clip Art", "Video Game", "Pastel Sketch", "Dark Fantasy", "Cyberpunk", "Steampunk", "Watercolor", "Art Nouveau". If the style doesn't fit exactly, choose the closest or provide a brief custom description.
 
     **CRITICAL RULES:**
     1.  **Format:** Return a JSON object with two keys: "description" (string) and "detectedStyle" (string).
@@ -242,42 +241,58 @@ export async function generateCharacterDescription(imageBase64: string, mimeType
 }
 
 export async function generateCharacterVisual(
-    characterName: string,
-    characterDescription: string,
-    style: string,
+    character: Character,
+    uiSelectedStyle: string,
     signal?: AbortSignal
 ): Promise<{ src: string | null; error: string | null }> {
     
-    // Construct a prompt that describes a single, full-body shot of the character in a natural setting.
-    // This provides a more organic and visually consistent result compared to a sterile character sheet.
-    const prompt = `Full-body portrait of a character named ${characterName}. ${characterDescription}. The character is standing in a simple, neutral setting that complements their appearance and the overall style.`;
+    // Path 1: User has uploaded an image and wants a consistent, full-body version.
+    if (character.originalImageBase64 && character.originalImageMimeType) {
+        
+        // Determine the target style based on user's special rules.
+        let targetStyle = character.detectedImageStyle || uiSelectedStyle; // Default to detected style or fall back to UI selection.
+        if (character.detectedImageStyle === 'Realistic Photo') {
+            targetStyle = 'Illustration'; // Per user request to convert "human" to illustration.
+        }
 
-    // Create a temporary Character object for the generation function.
-    const characterToGenerate: Character = {
-        id: -1, // This is a temporary object, so the ID doesn't matter.
-        name: characterName,
-        description: characterDescription,
-        imagePreview: null,
-        originalImageBase64: null,
-        originalImageMimeType: null,
-        detectedImageStyle: null,
-        isDescribing: false,
-    };
-    
-    // Reuse the main image generation function to ensure the character visual
-    // is created with the same logic and style consistency as the main storyboard scenes.
-    return generateSingleImage(
-        prompt,
-        '3:4', // Use a portrait aspect ratio suitable for a full-body character shot.
-        style,
-        'General', // Genre is not critical for a single character visualization.
-        [characterToGenerate],
-        [characterToGenerate],
-        'gemini-2.5-flash-image', // Use a high-quality model for best results.
-        null,
-        null,
-        signal
-    );
+        const editPrompt = `Using the provided image as a perfect reference, generate a full-body view of the exact same character, '${character.name}'. The character's face, features, clothing, hairstyle, and colors must be perfectly preserved to be exactly the same as the reference. Place the character in a standing pose on a plain, solid white background. Do not add any shadows or other elements. The final image must be in the style of '${targetStyle}'.`;
+
+        return editImage({
+            imageBase64: character.originalImageBase64,
+            mimeType: character.originalImageMimeType,
+            editPrompt: editPrompt,
+            aspectRatio: '3:4',
+            imageStyle: targetStyle,
+            genre: 'General',
+            characters: [character], // Provide itself for context
+            hasVisualMasks: false,
+            signal: signal,
+            imageModel: 'gemini-2.5-flash-image', // Use NanoBanana as requested
+        });
+
+    } 
+    // Path 2: User has only provided a text description.
+    else if (character.description) {
+        const prompt = `Character sheet for a character named '${character.name}'. Full-body view from head to toe, centered, standing pose. ${character.description}. The background must be completely plain, solid white. No shadows, no other objects, no gradients.`;
+        
+        // Use generateSingleImage to create from text.
+        return generateSingleImage(
+            prompt,
+            '3:4',
+            uiSelectedStyle, // Use the style selected in the UI for text-based generation.
+            'General', 
+            [character],
+            [character],
+            'gemini-2.5-flash-image', // Use NanoBanana as requested.
+            null,
+            null,
+            signal
+        );
+    }
+    // Path 3: Not enough information to generate.
+    else {
+        return { src: null, error: "Cannot generate visual without an original image or a description." };
+    }
 }
 
 export async function describeImageForConsistency(imageBase64: string, signal?: AbortSignal): Promise<string> {
@@ -922,6 +937,8 @@ async function generateSpeech(
     });
 
     try {
+        // FIX: Refactored to have a single return path within the try block to satisfy TypeScript's control flow analysis.
+        let ttsResponse: GenerateContentResponse;
         if (detectedSpeakers.size > 1) {
             // Multi-speaker logic
             const availableVoices = ['Kore', 'Puck', 'Zephyr', 'Charon', 'Fenrir'];
@@ -934,7 +951,7 @@ async function generateSpeech(
 
             const ttsPrompt = `TTS the following conversation:\n${script}`;
             
-            const ttsResponse: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+            ttsResponse = await withRetry(() => ai.models.generateContent({
                 model: "gemini-2.5-flash-preview-tts",
                 contents: [{ parts: [{ text: ttsPrompt }] }],
                 config: {
@@ -944,12 +961,10 @@ async function generateSpeech(
                     }
                 }
             }), undefined, signal);
-            const base64Audio = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-            return base64Audio || null;
         } else {
             // Single-speaker or Narrator logic
             let ttsPrompt = script;
-            if (imageStyle === 'Nigerian Cartoon') {
+            if (imageStyle === 'Afro-toon') {
                 ttsPrompt = `You are a Nigerian voice actor. Speak the following text in a lively and authentic Nigerian Pidgin English accent: "${script}"`;
             } else {
                 ttsPrompt = `Say with a clear and engaging voice: ${script}`;
@@ -958,7 +973,7 @@ async function generateSpeech(
             const singleSpeakerName = detectedSpeakers.size === 1 ? Array.from(detectedSpeakers)[0] : 'Narrator';
             const speakerVoice = singleSpeakerName === 'Narrator' ? 'Kore' : 'Puck';
 
-            const ttsResponse: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+            ttsResponse = await withRetry(() => ai.models.generateContent({
                 model: "gemini-2.5-flash-preview-tts",
                 contents: [{ parts: [{ text: ttsPrompt }] }],
                 config: {
@@ -968,12 +983,52 @@ async function generateSpeech(
                     },
                 },
             }), undefined, signal);
-            const base64Audio = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-            return base64Audio || null;
         }
+        const base64Audio = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        return base64Audio || null;
     } catch (err) {
         console.error("TTS generation failed:", err);
         throw new Error(`TTS generation failed: ${parseErrorMessage(err)}`);
+    }
+}
+
+// FIX: Added missing generateStorybookSpeech function to resolve import error in App.tsx.
+export async function generateStorybookSpeech(
+    script: string,
+    voice: string,
+    expression: string,
+    accent?: string,
+    signal?: AbortSignal
+): Promise<string | null> {
+    const ai = getAiClient();
+    if (!script) return null;
+
+    let ttsPrompt = script;
+
+    if (accent === 'Nigerian English') {
+        ttsPrompt = `You are a Nigerian voice actor. Speak the following text with a lively and authentic Nigerian accent: "${script}"`;
+    } else if (expression && !['Storytelling', 'Newscast', 'Advertisement'].includes(expression)) {
+        ttsPrompt = `Say with a ${expression.toLowerCase()} voice: ${script}`;
+    } else {
+        ttsPrompt = `Say clearly: ${script}`;
+    }
+    
+    try {
+        const ttsResponse: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+            model: "gemini-2.5-flash-preview-tts",
+            contents: [{ parts: [{ text: ttsPrompt }] }],
+            config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: {
+                    voiceConfig: { prebuiltVoiceConfig: { voiceName: voice as any } },
+                },
+            },
+        }), undefined, signal);
+        const base64Audio = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        return base64Audio || null;
+    } catch (err) {
+        console.error("Storybook TTS generation failed:", err);
+        throw new Error(`Storybook TTS generation failed: ${parseErrorMessage(err)}`);
     }
 }
 
@@ -1021,9 +1076,6 @@ export async function generateVideoFromScene(
     const validAspectRatio = aspectRatio === '16:9' || aspectRatio === '9:16' ? aspectRatio : '16:9';
     const cameraInstruction = CAMERA_MOVEMENT_PROMPTS[cameraMovement] || CAMERA_MOVEMENT_PROMPTS['Static Hold'];
     
-    // Improved Prompt Construction for Safety and Clarity
-    // If the script looks like dialogue (contains ':'), we treat it as context but focus the visual prompt on action.
-    // We add "Cinematic shot" to help ground the model in a safe, high-quality context.
     let promptAction = script ? script : 'The scene comes alive with natural, subtle motion.';
     if (script && script.includes(':')) {
          promptAction = `Characters are conversing naturally. ${script}`;
@@ -1248,7 +1300,6 @@ export async function generateStructuredStory(
     }
 }
 
-// FIX: Corrected typo in function return type from StorybookSceneData to StoryboardSceneData.
 export async function generateScenesFromNarrative(narrative: string, characters: string[], wantsDialogue?: boolean, signal?: AbortSignal): Promise<StoryboardSceneData[]> {
     const ai = getAiClient();
     const characterInstruction = characters.length > 0
@@ -1347,46 +1398,5 @@ export async function generateScenesFromNarrative(narrative: string, characters:
     } catch (e) {
         console.error("Failed to parse scenes from narrative JSON from AI:", response.text, e);
         throw new Error("The AI returned a scene breakdown that was not valid JSON. Please try again.");
-    }
-}
-
-export async function generateStorybookSpeech(
-    script: string,
-    voice: string,
-    expression: string,
-    accent: string = 'Global (Neutral)',
-    signal?: AbortSignal
-): Promise<string | null> {
-    const ai = getAiClient();
-    if (!script.trim()) {
-        return null;
-    }
-
-    let promptPrefix = '';
-    if (accent === 'Nigerian English') {
-        promptPrefix = `As a Nigerian voice actor with a ${expression.toLowerCase()} tone, say the following in a clear Nigerian English accent: `;
-    } else { // Global (Neutral)
-        promptPrefix = `Say with a ${expression.toLowerCase()} tone: `;
-    }
-    
-    const ttsPrompt = `${promptPrefix} "${script}"`;
-
-    try {
-        const ttsResponse: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-            model: "gemini-2.5-flash-preview-tts",
-            contents: [{ parts: [{ text: ttsPrompt }] }],
-            config: {
-                responseModalities: [Modality.AUDIO],
-                speechConfig: {
-                    voiceConfig: { prebuiltVoiceConfig: { voiceName: voice as any } },
-                },
-            },
-        }), undefined, signal);
-
-        const base64Audio = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        return base64Audio || null;
-    } catch (err) {
-        console.error("Storybook TTS generation failed:", err);
-        throw err;
     }
 }

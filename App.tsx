@@ -1,4 +1,5 @@
 
+
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { generateImageSet, generateVideoFromScene, StoryboardScene, generatePromptFromAudio, generateCharacterDescription, AudioOptions, generateSingleImage, Character, generateCameraAnglesFromImage, editImage, EditImageParams, CAMERA_MOVEMENT_PROMPTS, generateStructuredStory, Storybook, generateScenesFromNarrative, generateStorybookSpeech, PREBUILT_VOICES, VOICE_EXPRESSIONS, StorybookParts, ACCENT_OPTIONS, CAMERA_ANGLE_OPTIONS, generateCharacterVisual, describeImageForConsistency } from './services/geminiService';
 import { fileToBase64, base64ToBytes, compressImageBase64, pcmToWavBlob } from './utils/fileUtils';
@@ -85,6 +86,14 @@ type VideoState = {
   speaker: string; // Tracks the detected or selected speaker for UI highlighting
   cameraMovement: string;
   isCameraMovementOpen?: boolean;
+};
+
+type ConfirmationModalState = {
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    onCancel: () => void;
 };
 
 // Use AI Studio's synchronized storage if available, with a fallback to local storage.
@@ -197,7 +206,7 @@ const App: React.FC = () => {
     const [prompt, setPrompt] = useState<string>('');
     const [imageCount, setImageCount] = useState<number>(1);
     const [aspectRatio, setAspectRatio] = useState<string>('16:9');
-    const [imageStyle, setImageStyle] = useState<string>('Nigerian Cartoon');
+    const [imageStyle, setImageStyle] = useState<string>('Afro-toon');
     const [imageModel, setImageModel] = useState<string>('gemini-3-pro-image-preview');
     const [videoModel, setVideoModel] = useState<string>('veo-2-fast-generate-preview');
     const [genre, setGenre] = useState<string>('General');
@@ -225,7 +234,7 @@ const App: React.FC = () => {
     }) | null>(null);
 
     const [savedItems, setSavedItems] = useState<SavedItem[]>([]);
-    const [showSavedPanel, setShowSavedPanel] = useState(false);
+    const [historyFilter, setHistoryFilter] = useState<'all' | 'saved'>('all');
     const [showHistoryPanel, setShowHistoryPanel] = useState(false);
     const [showStorybookPanel, setShowStorybookPanel] = useState(false);
     const [storybookContent, setStorybookContent] = useState<Storybook>({
@@ -275,7 +284,14 @@ const App: React.FC = () => {
     const isDrawingRef = useRef(false);
     const lastPosRef = useRef<{ x: number; y: number } | null>(null);
     const currentPathRef = useRef<Array<{ x: number; y: number }>>([]);
-    const [brushSize, setBrushSize] = useState(30);
+
+    const [confirmationModal, setConfirmationModal] = useState<ConfirmationModalState>({
+        isOpen: false,
+        title: '',
+        message: '',
+        onConfirm: () => {},
+        onCancel: () => {},
+    });
 
     const checkApiKey = useCallback(async () => {
         if ((window as any).aistudio && (window as any).aistudio.hasSelectedApiKey) {
@@ -588,7 +604,7 @@ const App: React.FC = () => {
         ctx.lineTo(coords.x, coords.y);
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
-        ctx.lineWidth = brushSize; // Use state for brush size
+        ctx.lineWidth = 20; // Use fixed brush size
         
         if (drawingMode === 'add') {
             ctx.strokeStyle = 'rgba(0, 255, 0, 0.5)'; // Green for Add
@@ -796,217 +812,189 @@ const App: React.FC = () => {
     };
     
     const handleClearStorybook = () => {
-        if (window.confirm("Are you sure you want to clear the entire storybook? This action cannot be undone.")) {
-            if (storybookContent.narrativeAudioSrc && storybookContent.narrativeAudioSrc.startsWith('blob:')) {
-                URL.revokeObjectURL(storybookContent.narrativeAudioSrc);
-            }
-            storybookContent.scenes.forEach(scene => {
-                if (scene.audioSrc && scene.audioSrc.startsWith('blob:')) {
-                    URL.revokeObjectURL(scene.audioSrc);
+        setConfirmationModal({
+            isOpen: true,
+            title: 'Clear Storybook',
+            message: 'Are you sure you want to clear the entire storybook? This action cannot be undone.',
+            onConfirm: () => {
+                if (storybookContent.narrativeAudioSrc && storybookContent.narrativeAudioSrc.startsWith('blob:')) {
+                    URL.revokeObjectURL(storybookContent.narrativeAudioSrc);
                 }
-            });
+                storybookContent.scenes.forEach(scene => {
+                    if (scene.audioSrc && scene.audioSrc.startsWith('blob:')) {
+                        URL.revokeObjectURL(scene.audioSrc);
+                    }
+                });
 
-            const freshState: Storybook = {
-                title: '',
-                characters: [],
-                storyNarrative: '',
-                scenes: [],
-                narrativeAudioSrc: null,
-                isGeneratingNarrativeAudio: false,
-                selectedNarrativeVoice: 'Kore',
-                selectedNarrativeExpression: 'Storytelling',
-                selectedNarrativeAccent: 'Nigerian English',
-            };
-            setStorybookContent(freshState);
-            setStorybookAiPrompt('');
-            setIsAiStoryHelpMode(false);
-        }
+                const freshState: Storybook = {
+                    title: '',
+                    characters: [],
+                    storyNarrative: '',
+                    scenes: [],
+                    narrativeAudioSrc: null,
+                    isGeneratingNarrativeAudio: false,
+                    selectedNarrativeVoice: 'Kore',
+                    selectedNarrativeExpression: 'Storytelling',
+                    selectedNarrativeAccent: 'Nigerian English',
+                };
+                setStorybookContent(freshState);
+                setStorybookAiPrompt('');
+                setIsAiStoryHelpMode(false);
+                setConfirmationModal({ ...confirmationModal, isOpen: false });
+            },
+            onCancel: () => {
+                setConfirmationModal({ ...confirmationModal, isOpen: false });
+            },
+        });
     };
 
-    const handleCreateStoryboardFromScript = useCallback(async () => {
+    const handleCreateStoryboardFromScript = useCallback(() => {
         setStorybookError(null);
         if (storybookContent.scenes.length === 0) {
-            setStorybookError({ message: 'Your storybook has no scenes to generate instead.', type: 'warning' });
-            return;
-        }
-        
-        if (!window.confirm("This will replace your current storyboard with a new one generated from this script. Are you sure you want to continue?")) {
+            setStorybookError({ message: 'Your storybook has no scenes to generate.', type: 'warning' });
             return;
         }
     
-        // 1. Update UI Status and Close Modal immediately
-        setAppStatus({ status: 'loading', error: null });
-        setStatusMessage('Preparing storyboard...');
-        setShowStorybookPanel(false);
+        const performCreation = async () => {
+            setAppStatus({ status: 'loading', error: null });
+            setStatusMessage('Preparing storyboard...');
+            setShowStorybookPanel(false);
     
-        // 2. Prepare Data synchronously
-        const scriptCharacters = storybookContent.characters || [];
-        // Enhance character matching: use synced list OR scan text for character names if not synced
-        const allSceneText = storybookContent.scenes.map(s => s.imageDescription).join(' ').toLowerCase();
-        const relevantCharacters = characters.filter(c => 
-            (c.name && scriptCharacters.some(sc => sc.toLowerCase() === c.name.toLowerCase())) ||
-            (c.name && allSceneText.includes(c.name.toLowerCase()))
-        );
-
-        // Sync imageCount with storybook scenes count
-        setImageCount(storybookContent.scenes.length);
-
-        const initialVideoStates: VideoState[] = storybookContent.scenes.map(scene => {
-            let detectedSpeaker = 'Narrator';
-            const narration = scene.narration || '';
-            const match = narration.match(/^([^\n:]+):/);
-            if (match) {
-                const extractedName = match[1].trim();
-                const matchedChar = characters.find(c => c.name.toLowerCase() === extractedName.toLowerCase());
-                detectedSpeaker = matchedChar ? matchedChar.name : extractedName;
-            }
-
-            return {
-                status: 'idle',
-                clips: [],
-                currentClipIndex: -1,
-                error: null,
-                loadingMessage: '',
-                showScriptInput: false,
-                scriptPrompt: narration,
-                voiceoverMode: 'tts',
-                voiceoverFile: null,
-                speaker: detectedSpeaker,
-                cameraMovement: 'Static Hold',
+            const scriptCharacters = storybookContent.characters || [];
+            const allSceneText = storybookContent.scenes.map(s => s.imageDescription).join(' ').toLowerCase();
+            const relevantCharacters = characters.filter(c => 
+                (c.name && scriptCharacters.some(sc => sc.toLowerCase() === c.name.toLowerCase())) ||
+                (c.name && allSceneText.includes(c.name.toLowerCase()))
+            );
+    
+            setImageCount(storybookContent.scenes.length);
+    
+            const initialVideoStates: VideoState[] = storybookContent.scenes.map(scene => {
+                let detectedSpeaker = 'Narrator';
+                const narration = scene.narration || '';
+                const match = narration.match(/^([^\n:]+):/);
+                if (match) {
+                    const extractedName = match[1].trim();
+                    const matchedChar = characters.find(c => c.name.toLowerCase() === extractedName.toLowerCase());
+                    detectedSpeaker = matchedChar ? matchedChar.name : extractedName;
+                }
+    
+                return {
+                    status: 'idle', clips: [], currentClipIndex: -1, error: null, loadingMessage: '',
+                    showScriptInput: false, scriptPrompt: narration, voiceoverMode: 'tts',
+                    voiceoverFile: null, speaker: detectedSpeaker, cameraMovement: 'Static Hold',
+                };
+            });
+    
+            const newHistoryItem: GenerationItem = {
+                id: Date.now(),
+                prompt: storybookContent.title || 'From Storybook',
+                imageSet: storybookContent.scenes.map(scene => ({
+                    src: null, prompt: scene.imageDescription, error: null, isRegenerating: false, isGenerating: true,
+                })),
+                videoStates: initialVideoStates, aspectRatio, imageStyle, genre,
+                characters: relevantCharacters, imageModel
             };
-        });
-
-        const newHistoryItem: GenerationItem = {
-            id: Date.now(),
-            prompt: storybookContent.title || 'From Storybook',
-            imageSet: storybookContent.scenes.map(scene => ({
-                src: null,
-                prompt: scene.imageDescription,
-                error: null,
-                isRegenerating: false,
-                isGenerating: true,
-            })),
-            videoStates: initialVideoStates,
-            aspectRatio,
-            imageStyle,
-            genre,
-            characters: relevantCharacters,
-            imageModel
+    
+            setGenerationHistory(prev => [...prev, newHistoryItem]);
+            setTimeout(() => { setActiveHistoryIndex(prev => prev + 1); setActiveVideoIndex(-1); }, 50);
+            await new Promise(resolve => setTimeout(resolve, 200));
+        
+            const signal = startOperation();
+    
+            try {
+                const generatedScenes: AppStoryboardScene[] = [];
+                for (let i = 0; i < storybookContent.scenes.length; i++) {
+                    if (signal.aborted) throw new Error('Aborted');
+                    const scene = storybookContent.scenes[i];
+                    
+                    setStatusMessage(`Generating... ${storybookContent.scenes.length - i} remaining`);
+        
+                    const { src, error } = await generateSingleImage(
+                        scene.imageDescription, aspectRatio, imageStyle, genre,
+                        relevantCharacters, relevantCharacters, imageModel, null, null, signal
+                    );
+                    
+                    generatedScenes.push({ prompt: scene.imageDescription, src, error, isGenerating: false });
+        
+                    setGenerationHistory(prev => prev.map(item => {
+                        if (item.id === newHistoryItem.id) {
+                            const updatedImageSet = [...item.imageSet];
+                            updatedImageSet[i] = { ...updatedImageSet[i], src, error, isGenerating: false };
+                            return { ...item, imageSet: updatedImageSet };
+                        }
+                        return item;
+                    }));
+        
+                     if (i < storybookContent.scenes.length - 1) {
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                    }
+                }
+                
+                const successfulCount = generatedScenes.filter(s => s.src).length;
+                if (successfulCount > 0) {
+                    incrementCount('images', successfulCount);
+                }
+                
+                setAppStatus({ status: 'idle', error: null });
+                setStatusMessage('');
+        
+            } catch (error) {
+                if (handleApiKeyError(error)) return;
+                const parsedError = parseErrorMessage(error);
+                if (parsedError === 'Aborted') {
+                    setAppStatus({ status: 'error', error: "Generation stopped by user." });
+                    setGenerationHistory(prev => prev.map(item => {
+                        if (item.id === newHistoryItem.id) {
+                            return { ...item, imageSet: item.imageSet.map(s => s.isGenerating ? {...s, isGenerating: false, error: 'Stopped.'} : s) }
+                        }
+                        return item;
+                    }));
+                    return;
+                }
+                setAppStatus({ status: 'error', error: `Failed to create storyboard: ${parsedError}` });
+                setStatusMessage('');
+                setGenerationHistory(prev => prev.map(item => {
+                    if (item.id === newHistoryItem.id) {
+                        return { ...item, imageSet: item.imageSet.map(s => s.isGenerating ? {...s, isGenerating: false, error: s.error || 'Failed'} : s) }
+                    }
+                    return item;
+                }));
+            } finally {
+                abortControllerRef.current = null;
+            }
         };
-
-        // 3. Force State Updates to Switch View
-        setGenerationHistory(prev => [...prev, newHistoryItem]);
-        // Defer history index update to useEffect or next tick to allow render, 
-        // but explicit setting here usually works if state batching is handled.
-        // We set it after a small timeout to ensure the DOM is ready.
-        setTimeout(() => {
-            setActiveHistoryIndex(prev => prev + 1); // Point to the new last item
-            setActiveVideoIndex(-1);
-        }, 50);
-
-        // 4. CRITICAL: Wait for UI to render the new view before starting heavy API calls.
-        await new Promise(resolve => setTimeout(resolve, 200));
     
-        // 5. Start Generation Loop
-        const signal = startOperation();
-
-        try {
-            const generatedScenes: AppStoryboardScene[] = [];
-            for (let i = 0; i < storybookContent.scenes.length; i++) {
-                if (signal.aborted) throw new Error('Aborted');
-                const scene = storybookContent.scenes[i];
-                
-                const remaining = storybookContent.scenes.length - i;
-                if (remaining > 1) {
-                    setStatusMessage(`Generating... ${remaining} remaining`);
-                } else {
-                     setStatusMessage(`Generating scene...`);
-                }
-    
-                const { src, error } = await generateSingleImage(
-                    scene.imageDescription,
-                    aspectRatio,
-                    imageStyle,
-                    genre,
-                    relevantCharacters,
-                    relevantCharacters,
-                    imageModel,
-                    null,
-                    null,
-                    signal
-                );
-                
-                generatedScenes.push({ prompt: scene.imageDescription, src, error, isGenerating: false });
-    
-                // Update history in real-time to show progress
-                setGenerationHistory(prev => prev.map(item => {
-                    if (item.id === newHistoryItem.id) {
-                        const updatedImageSet = [...item.imageSet];
-                        updatedImageSet[i] = { ...updatedImageSet[i], src, error, isGenerating: false };
-                        return { ...item, imageSet: updatedImageSet };
-                    }
-                    return item;
-                }));
-    
-                 if (i < storybookContent.scenes.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 3000)); // Increased delay to prevent rate limiting issues causing "never works"
-                }
+        setConfirmationModal({
+            isOpen: true,
+            title: 'Generate New Storyboard',
+            message: 'This will replace your current storyboard with a new one generated from this script. Are you sure you want to continue?',
+            onConfirm: () => {
+                setConfirmationModal(prev => ({ ...prev, isOpen: false }));
+                performCreation();
+            },
+            onCancel: () => {
+                setConfirmationModal(prev => ({ ...prev, isOpen: false }));
             }
-            
-            const successfulCount = generatedScenes.filter(s => s.src).length;
-            if (successfulCount > 0) {
-                incrementCount('images', successfulCount);
-            }
-            
-            setAppStatus({ status: 'idle', error: null });
-            setStatusMessage('');
-    
-        } catch (error) {
-            if (handleApiKeyError(error)) return;
-            const parsedError = parseErrorMessage(error);
-            if (parsedError === 'Aborted') {
-                setAppStatus({ status: 'error', error: "Generation stopped. This could be due to cancellation or a mobile network interruption." });
-                setGenerationHistory(prev => prev.map(item => {
-                    if (item.id === newHistoryItem.id) {
-                        return { ...item, imageSet: item.imageSet.map(s => s.isGenerating ? {...s, isGenerating: false, error: 'Stopped.'} : s) }
-                    }
-                    return item;
-                }));
-                return;
-            }
-            setAppStatus({ status: 'error', error: `Failed to create storyboard from script: ${parsedError}` });
-            setStatusMessage('');
-             // Ensure generation flags are cleared on error
-            setGenerationHistory(prev => prev.map(item => {
-                if (item.id === newHistoryItem.id) {
-                    return { ...item, imageSet: item.imageSet.map(s => s.isGenerating ? {...s, isGenerating: false, error: s.error || 'Failed'} : s) }
-                }
-                return item;
-            }));
-        } finally {
-            abortControllerRef.current = null;
-        }
+        });
     }, [storybookContent, characters, aspectRatio, imageStyle, genre, imageModel, incrementCount]);
-
+    
     const handleGenerateSceneFromStorybook = async (index: number, description: string) => {
         if (!description.trim()) {
             setAppStatus({ status: 'error', error: 'Cannot generate from an empty description.' });
             setTimeout(() => setAppStatus(prev => ({ ...prev, error: null })), 3000);
             return;
         }
-        
-        // Immediately start generation flow
+    
         setShowStorybookPanel(false);
         setAppStatus({ status: 'loading', error: null });
         setStatusMessage('Generating scene from storybook...');
         setActiveVideoIndex(-1);
-
         const signal = startOperation();
-        
-        // Identify relevant characters for this specific scene
+    
         const relevantCharacters = characters.filter(c => c.name && description.toLowerCase().includes(c.name.toLowerCase()));
-
-        // Create initial history item
+    
+        // Always create a new, single-card storyboard.
         const newHistoryItem: GenerationItem = {
             id: Date.now(),
             prompt: `Scene ${index + 1}: ${description}`,
@@ -1030,36 +1018,24 @@ const App: React.FC = () => {
             characters: relevantCharacters,
             imageModel
         };
-
+    
         setGenerationHistory(prev => [...prev, newHistoryItem]);
-        // Defer index update slightly to ensure state is ready
         setTimeout(() => setActiveHistoryIndex(prev => prev + 1), 50);
-
+    
         try {
             const { src, error } = await generateSingleImage(
-                description,
-                aspectRatio,
-                imageStyle,
-                genre,
-                relevantCharacters,
-                relevantCharacters,
-                imageModel,
-                null,
-                null,
-                signal
+                description, aspectRatio, imageStyle, genre,
+                relevantCharacters, characters, imageModel,
+                null, null, signal
             );
-
-            // Update history with result
+    
             setGenerationHistory(prev => prev.map(item => {
                 if (item.id === newHistoryItem.id) {
-                     return {
-                        ...item,
-                        imageSet: [{ src, prompt: description, error, isGenerating: false }]
-                     };
+                    return { ...item, imageSet: [{ src, prompt: description, error, isGenerating: false }] };
                 }
                 return item;
             }));
-
+    
             if (src) {
                 incrementCount('images', 1);
                 setZoomedImage(src);
@@ -1067,15 +1043,12 @@ const App: React.FC = () => {
             setAppStatus({ status: 'idle', error: null });
             setStatusMessage('');
         } catch (error) {
-             if (handleApiKeyError(error)) return;
-             const parsedError = parseErrorMessage(error);
-             setAppStatus({ status: 'error', error: parsedError });
-             setGenerationHistory(prev => prev.map(item => {
+            if (handleApiKeyError(error)) return;
+            const parsedError = parseErrorMessage(error);
+            setAppStatus({ status: 'error', error: parsedError });
+            setGenerationHistory(prev => prev.map(item => {
                 if (item.id === newHistoryItem.id) {
-                     return {
-                        ...item,
-                        imageSet: [{ ...item.imageSet[0], error: parsedError, isGenerating: false }]
-                     };
+                    return { ...item, imageSet: [{ ...item.imageSet[0], error: parsedError, isGenerating: false }] };
                 }
                 return item;
             }));
@@ -1083,6 +1056,7 @@ const App: React.FC = () => {
             abortControllerRef.current = null;
         }
     };
+
 
     const handleStorybookChange = (field: keyof Omit<Storybook, 'scenes' | 'characters'>, value: string) => {
         setStorybookContent(prev => ({ ...prev, [field]: value }));
@@ -1395,8 +1369,8 @@ const App: React.FC = () => {
 
     const handleBuildCharacterVisual = async (charId: number) => {
         const character = characters.find(c => c.id === charId);
-        if (!character || !character.description || !character.name) {
-            setAppStatus({ status: 'error', error: "Character needs a name and description to be built." });
+        if (!character || (!character.description?.trim() && !character.originalImageBase64) || !character.name.trim()) {
+            setAppStatus({ status: 'error', error: "Character needs a name and either a description or an uploaded image to be built." });
             setTimeout(() => setAppStatus({ status: 'idle', error: null }), 3000);
             return;
         }
@@ -1406,8 +1380,7 @@ const App: React.FC = () => {
     
         try {
             const { src, error } = await generateCharacterVisual(
-                character.name,
-                character.description,
+                character,
                 imageStyle,
                 signal
             );
@@ -1418,7 +1391,6 @@ const App: React.FC = () => {
                     imagePreview: `data:image/png;base64,${src}`,
                     originalImageBase64: src,
                     originalImageMimeType: 'image/png',
-                    detectedImageStyle: imageStyle,
                     isDescribing: false
                 } : c));
                 incrementCount('images', 1);
@@ -2084,14 +2056,13 @@ const App: React.FC = () => {
 
     const submitEdit = async () => {
         if (!editingScene || !editingScene.src) return;
-
+    
         const generationItem = generationHistory.find(item => item.id === editingScene.generationId);
         if (!generationItem) return;
-
-        // Composite image + mask if drawing happened
+    
         let imageToProcess = editingScene.src;
         let hasVisualMasks = false;
-
+    
         if (hasDrawn && canvasRef.current) {
              const img = new Image();
              img.src = `data:image/png;base64,${editingScene.src}`;
@@ -2103,22 +2074,18 @@ const App: React.FC = () => {
              const ctx = offscreen.getContext('2d');
              
              if (ctx) {
-                // Draw original
                 ctx.drawImage(img, 0, 0);
-                // Draw mask (the visible canvas content on top)
                 ctx.drawImage(canvasRef.current, 0, 0);
-                
                 imageToProcess = offscreen.toDataURL('image/png').split(',')[1];
                 hasVisualMasks = true;
              }
         }
         
-        // Ensure either prompt or drawing exists
         if (!editingScene.editPrompt.trim() && !hasVisualMasks) return;
-
+    
         setEditingScene({ ...editingScene, isRegenerating: true, error: null });
         const signal = startOperation();
-
+    
         try {
             const { src, error } = await editImage({
                 imageBase64: imageToProcess,
@@ -2128,52 +2095,49 @@ const App: React.FC = () => {
                 imageStyle: generationItem.imageStyle,
                 genre: generationItem.genre,
                 characters: generationItem.characters,
-                hasVisualMasks, // Pass flag to service
+                hasVisualMasks,
                 signal,
                 imageModel: generationItem.imageModel.includes('gemini') ? generationItem.imageModel : 'gemini-3-pro-image-preview'
             });
-
+    
             if (src && !error) {
                 incrementCount('images', 1);
                 setZoomedImage(src);
-                
-                setEditingScene(prev => {
-                    if (!prev) return null;
-                    const newHistory = [...prev.editHistory.slice(0, prev.editHistoryIndex + 1), src];
-                    return {
-                        ...prev,
-                        src,
-                        isRegenerating: false,
-                        previousSrc: prev.src, // Legacy support
-                        error: null,
-                        editHistory: newHistory,
-                        editHistoryIndex: newHistory.length - 1
-                    };
-                });
-                
+    
+                const newScene: AppStoryboardScene = {
+                    src,
+                    prompt: `Edited: ${editingScene.editPrompt || 'Visual Edit'}`,
+                    error: null,
+                    isCameraAngleFor: editingScene.isCameraAngleFor,
+                };
+    
+                const parentVideoState = generationItem.videoStates[editingScene.sceneIndex];
+                const newVideoState: VideoState = { ...parentVideoState, status: 'idle', clips: [], currentClipIndex: -1, error: null, loadingMessage: '' };
+    
                 setGenerationHistory(prev => prev.map(item => {
                     if (item.id === editingScene.generationId) {
-                        return { ...item, imageSet: item.imageSet.map((s, i) => i === editingScene.sceneIndex ? { ...s, src, error: null } : s) };
+                        const updatedImageSet = item.imageSet.map((s, i) => i === editingScene.sceneIndex ? { ...s, isEditing: false } : s);
+                        const updatedVideoStates = [...item.videoStates];
+                        updatedImageSet.splice(editingScene.sceneIndex + 1, 0, newScene);
+                        updatedVideoStates.splice(editingScene.sceneIndex + 1, 0, newVideoState);
+                        return { ...item, imageSet: updatedImageSet, videoStates: updatedVideoStates };
                     }
                     return item;
                 }));
-                // Reset drawing state after successful edit
-                setHasDrawn(false);
-                setDrawingMode('none');
-                if (canvasRef.current) {
-                    const ctx = canvasRef.current.getContext('2d');
-                    if (ctx) ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-                }
-
+    
+                setEditingScene(null);
+    
             } else {
                 setEditingScene({ ...editingScene, isRegenerating: false, error });
             }
-
+    
         } catch (err) {
-            if (handleApiKeyError(err)) return;
+            if (handleApiKeyError(err)) {
+                setEditingScene({ ...editingScene, isRegenerating: false });
+                return;
+            };
             const parsedError = parseErrorMessage(err);
             if (parsedError === 'Aborted') {
-                setAppStatus({ status: 'error', error: "Generation stopped. This could be due to cancellation or a mobile network interruption." });
                 setEditingScene({ ...editingScene, isRegenerating: false, error: 'Stopped.' });
                 return;
             }
@@ -2191,7 +2155,11 @@ const App: React.FC = () => {
         const videoState = generationItem.videoStates[sceneIndex];
         const id = `${generationId}-${sceneIndex}`;
 
-        if (savedItems.some(item => item.id === id)) return;
+        if (savedItems.some(item => item.id === id)) {
+            // If already saved, unsave it
+            unsaveScene(id);
+            return;
+        }
 
         const newItem: SavedItem = {
             id,
@@ -2217,26 +2185,6 @@ const App: React.FC = () => {
         await saveItems(newSavedItems);
     };
 
-    const restoreSavedItem = (item: SavedItem) => {
-        const newGenerationItem: GenerationItem = {
-            id: Date.now(),
-            prompt: item.originalPrompt,
-            imageSet: [item.scene],
-            videoStates: [item.videoState],
-            aspectRatio: item.aspectRatio,
-            imageStyle: item.imageStyle,
-            genre: item.genre,
-            characters: item.characters,
-            imageModel: item.imageModel,
-        };
-
-        const newHistory = [...generationHistory, newGenerationItem];
-        setGenerationHistory(newHistory);
-        setActiveHistoryIndex(newHistory.length - 1);
-        
-        setShowSavedPanel(false);
-    };
-
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const files = e.target.files;
         if (!files || files.length === 0) return;
@@ -2252,7 +2200,7 @@ const App: React.FC = () => {
                     prompt: `Uploaded: ${file.name}`,
                     imageSet: [scene],
                     aspectRatio: '16:9', 
-                    imageStyle: 'Nigerian Cartoon', 
+                    imageStyle: 'Afro-toon', 
                     genre: 'General',
                     characters: [], 
                     imageModel: 'gemini-2.5-flash-image', 
@@ -2512,6 +2460,15 @@ const App: React.FC = () => {
         return characters.filter(c => c.name && lowerCasePrompt.includes(c.name.toLowerCase()));
     }, [prompt, characters]);
 
+    const filteredHistory = useMemo(() => {
+        if (historyFilter === 'saved') {
+            return generationHistory.filter(historyItem => {
+                return savedItems.some(savedItem => savedItem.id.startsWith(`${historyItem.id}-`));
+            }).sort((a, b) => b.id - a.id);
+        }
+        return [...generationHistory].sort((a, b) => b.id - a.id);
+    }, [generationHistory, savedItems, historyFilter]);
+
     if (!hasConfirmedApiKey) {
         return (
             <div className="bg-gray-900 text-white min-h-screen flex items-center justify-center">
@@ -2566,14 +2523,12 @@ const App: React.FC = () => {
                     Open Storybook
                 </button>
 
-                <div className="grid grid-cols-2 gap-2">
-                     <button onClick={() => setShowHistoryPanel(!showHistoryPanel)} className="flex items-center justify-center gap-2 p-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition-colors">
-                        <HistoryIcon className="w-4 h-4" /> History
-                    </button>
-                    <button onClick={() => setShowSavedPanel(!showSavedPanel)} className="flex items-center justify-center gap-2 p-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition-colors">
-                        <BookmarkIcon className="w-4 h-4" /> Saved
-                    </button>
-                </div>
+                <button 
+                    onClick={() => { setShowHistoryPanel(true); setHistoryFilter('all'); }} 
+                    className="w-full flex items-center justify-center gap-2 p-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition-colors"
+                >
+                    <HistoryIcon className="w-4 h-4" /> View History & Saved
+                </button>
 
                 <div className="space-y-2">
                     <div className="flex items-center justify-between">
@@ -2639,98 +2594,8 @@ const App: React.FC = () => {
                     {renderCharacterInserter('prompt')}
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Scenes</label>
-                        <input
-                            type="number"
-                            value={imageCount}
-                            onChange={(e) => setImageCount(parseInt(e.target.value, 10))}
-                            className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
-                            min="1"
-                            max="10"
-                        />
-                    </div>
-                    <div className="space-y-1">
-                        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Ratio</label>
-                        <select
-                            value={aspectRatio}
-                            onChange={(e) => setAspectRatio(e.target.value)}
-                            className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
-                        >
-                            <option>16:9</option>
-                            <option>9:16</option>
-                            <option>4:3</option>
-                            <option>3:4</option>
-                            <option>1:1</option>
-                        </select>
-                    </div>
-                    <div className="space-y-1 col-span-2">
-                        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Style</label>
-                        <select
-                            value={imageStyle}
-                            onChange={(e) => setImageStyle(e.target.value)}
-                            className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
-                        >
-                            <option>Nigerian Cartoon</option>
-                            <option>Cartoon (Big Head)</option>
-                            <option>Illustration</option>
-                            <option>3D Render</option>
-                            <option>Realistic Photo</option>
-                            <option>Oil Painting</option>
-                            <option>Pixel Art</option>
-                            <option>2D Flat</option>
-                            <option>Anime</option>
-                            <option>Video Game</option>
-                            <option>Watercolor</option>
-                            <option>Cyberpunk</option>
-                        </select>
-                    </div>
-                     <div className="space-y-1 col-span-2">
-                        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Image Model</label>
-                        <select
-                            value={imageModel}
-                            onChange={(e) => setImageModel(e.target.value)}
-                            className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
-                        >
-                            <option value="gemini-3-pro-image-preview">Gemini 3 Pro (High Quality)</option>
-                            <option value="gemini-2.5-flash-image">Gemini Flash (Fast)</option>
-                            <option value="imagen-4.0-generate-001">Imagen 4 (Legacy)</option>
-                        </select>
-                    </div>
-                     <div className="space-y-1 col-span-2">
-                        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Video Model</label>
-                        <select
-                            value={videoModel}
-                            onChange={(e) => setVideoModel(e.target.value)}
-                            className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
-                        >
-                            <option value="veo-2-fast-generate-preview">Veo 2 (Fast)</option>
-                            <option value="veo-2-generate">Veo 2 (Legacy)</option>
-                            <option value="veo-3.1-fast-generate-preview">Veo 3.1 (Fast)</option>
-                            <option value="veo-3.1-generate-preview">Veo 3.1 (High Quality)</option>
-                        </select>
-                    </div>
-                    <div className="space-y-1 col-span-2">
-                        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Genre</label>
-                        <select
-                            value={genre}
-                            onChange={(e) => setGenre(e.target.value)}
-                            className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
-                        >
-                            <option>General</option>
-                            <option>Sci-Fi</option>
-                            <option>Fantasy</option>
-                            <option>Horror</option>
-                            <option>Comedy</option>
-                            <option>Romance</option>
-                            <option>Mystery</option>
-                        </select>
-                    </div>
-                </div>
-
-                {/* Characters Panel - Moved to bottom, replacing Daily Usage */}
-                <div className="space-y-3 border-t border-gray-700 pt-6">
+                {/* Characters Panel */}
+                <div className="space-y-3">
                     <div className="flex items-center justify-between">
                         <h2 className="text-sm font-bold text-gray-300">Build Characters</h2>
                          <div className="flex gap-2">
@@ -2796,7 +2661,7 @@ const App: React.FC = () => {
                                 </div>
                                 <button 
                                     onClick={() => handleBuildCharacterVisual(char.id)}
-                                    disabled={char.isDescribing || !char.description}
+                                    disabled={char.isDescribing || (!char.description?.trim() && !char.originalImageBase64)}
                                     className={`w-full py-1.5 border rounded text-[10px] font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed
                                         ${char.imagePreview 
                                             ? 'bg-gray-700 text-gray-300 border-gray-600 hover:bg-gray-600 hover:text-white' 
@@ -2831,6 +2696,95 @@ const App: React.FC = () => {
                         }}
                         accept="image/*"
                     />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Scenes</label>
+                        <input
+                            type="number"
+                            value={imageCount}
+                            onChange={(e) => setImageCount(parseInt(e.target.value, 10))}
+                            className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
+                            min="1"
+                            max="10"
+                        />
+                    </div>
+                    <div className="space-y-1">
+                        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Ratio</label>
+                        <select
+                            value={aspectRatio}
+                            onChange={(e) => setAspectRatio(e.target.value)}
+                            className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
+                        >
+                            <option>16:9</option>
+                            <option>9:16</option>
+                            <option>4:3</option>
+                            <option>3:4</option>
+                            <option>1:1</option>
+                        </select>
+                    </div>
+                    <div className="space-y-1 col-span-2">
+                        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Style</label>
+                        <select
+                            value={imageStyle}
+                            onChange={(e) => setImageStyle(e.target.value)}
+                            className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
+                        >
+                            <option>Afro-toon</option>
+                            <option>Illustration</option>
+                            <option>3D Render</option>
+                            <option>Realistic Photo</option>
+                            <option>Oil Painting</option>
+                            <option>Pixel Art</option>
+                            <option>2D Flat</option>
+                            <option>Anime</option>
+                            <option>Video Game</option>
+                            <option>Watercolor</option>
+                            <option>Cyberpunk</option>
+                        </select>
+                    </div>
+                     <div className="space-y-1 col-span-2">
+                        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Image Model</label>
+                        <select
+                            value={imageModel}
+                            onChange={(e) => setImageModel(e.target.value)}
+                            className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
+                        >
+                            <option value="gemini-3-pro-image-preview">Gemini 3 Pro (High Quality)</option>
+                            <option value="gemini-2.5-flash-image">Gemini Flash (Fast)</option>
+                            <option value="imagen-4.0-generate-001">Imagen 4 (Legacy)</option>
+                        </select>
+                    </div>
+                     <div className="space-y-1 col-span-2">
+                        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Video Model</label>
+                        <select
+                            value={videoModel}
+                            onChange={(e) => setVideoModel(e.target.value)}
+                            className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
+                        >
+                            <option value="veo-2-fast-generate-preview">Veo 2 (Fast)</option>
+                            <option value="veo-2-generate-preview">Veo 2 (High Quality)</option>
+                            <option value="veo-3.1-fast-generate-preview">Veo 3.1 (Fast)</option>
+                            <option value="veo-3.1-generate-preview">Veo 3.1 (High Quality)</option>
+                        </select>
+                    </div>
+                    <div className="space-y-1 col-span-2">
+                        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Genre</label>
+                        <select
+                            value={genre}
+                            onChange={(e) => setGenre(e.target.value)}
+                            className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
+                        >
+                            <option>General</option>
+                            <option>Sci-Fi</option>
+                            <option>Fantasy</option>
+                            <option>Horror</option>
+                            <option>Comedy</option>
+                            <option>Romance</option>
+                            <option>Mystery</option>
+                        </select>
+                    </div>
                 </div>
                 
                 {appStatus.status === 'loading' ? (
@@ -2945,6 +2899,7 @@ const App: React.FC = () => {
                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4 gap-6 pb-10">
                                 {currentGenerationItem?.imageSet.map((scene, index) => {
                                     const isLoading = scene.isGenerating || scene.isRegenerating || scene.isGeneratingAngles;
+                                    const isSaved = savedItems.some(i => i.id === `${currentGenerationItem.id}-${index}`);
                                     return (
                                         <div key={index} className={`bg-gray-800 rounded-lg shadow-lg overflow-hidden flex flex-col ${scene.isCameraAngleFor !== undefined ? 'border-l-4 border-indigo-500' : ''}`}>
                                             <div className="relative aspect-video bg-black/40 flex items-center justify-center">
@@ -2976,7 +2931,7 @@ const App: React.FC = () => {
                                                     <div className="flex gap-1">
                                                         {scene.src && !scene.isRegenerating && (
                                                             <>
-                                                                <button onClick={() => saveScene(currentGenerationItem.id, index)} className={`p-1.5 rounded hover:bg-gray-600 ${savedItems.some(i => i.id === `${currentGenerationItem.id}-${index}`) ? 'text-indigo-400' : 'text-gray-400'}`} title="Save"><BookmarkIcon className="w-4 h-4" solid={savedItems.some(i => i.id === `${currentGenerationItem.id}-${index}`)} /></button>
+                                                                <button onClick={() => saveScene(currentGenerationItem.id, index)} className={`p-1.5 rounded hover:bg-gray-600 ${isSaved ? 'text-indigo-400' : 'text-gray-400'}`} title={isSaved ? 'Unsave' : 'Save'}><BookmarkIcon className="w-4 h-4" solid={isSaved} /></button>
                                                                 <button onClick={() => openAngleSelectionModal(currentGenerationItem.id, index)} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded" title="More Angles"><CameraIcon className="w-4 h-4" /></button>
                                                                 <button onClick={() => startEditing(currentGenerationItem.id, index)} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded" title="Edit Image"><SparklesIcon className="w-4 h-4" /></button>
                                                             </>
@@ -3156,7 +3111,18 @@ const App: React.FC = () => {
                             </div>
 
                             <div className="mb-4">
-                                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">Paint Tools</label>
+                                <div className="flex justify-between items-center mb-2">
+                                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Paint Tools</label>
+                                    {hasDrawn && (
+                                        <button
+                                            onClick={clearCanvas}
+                                            className="flex items-center gap-1 px-2 py-0.5 bg-gray-700/50 hover:bg-gray-700 rounded text-[10px] font-bold text-gray-400 border border-gray-600/50 transition-colors"
+                                            title="Clear all paint from the canvas"
+                                        >
+                                            <RefreshIcon className="w-3 h-3" /> Clear
+                                        </button>
+                                    )}
+                                </div>
                                 <div className="flex gap-1 bg-gray-900 p-1 rounded-lg border border-gray-700 h-9">
                                     <button
                                         onClick={() => setDrawingMode('remove')}
@@ -3197,26 +3163,6 @@ const App: React.FC = () => {
                                         <span className="text-[9px] font-bold uppercase">VIEW</span>
                                     </button>
                                 </div>
-                                
-                                {drawingMode !== 'none' && (
-                                    <div className="flex items-center justify-between mt-2">
-                                        <span className="text-xs text-gray-400">Brush Size:</span>
-                                        <div className="flex items-center gap-2">
-                                            <button onClick={() => setBrushSize(s => Math.max(5, s - 5))} className="px-2 py-0.5 bg-gray-700 rounded text-lg font-bold">-</button>
-                                            <span className="text-sm font-mono w-6 text-center">{brushSize}</span>
-                                            <button onClick={() => setBrushSize(s => Math.min(100, s + 5))} className="px-2 py-0.5 bg-gray-700 rounded text-lg font-bold">+</button>
-                                        </div>
-                                    </div>
-                                )}
-                                
-                                {hasDrawn && (
-                                    <button 
-                                        onClick={clearCanvas}
-                                        className="w-full mt-2 py-1 text-xs text-gray-500 hover:text-white flex items-center justify-center gap-1 border border-dashed border-gray-700 rounded hover:border-gray-500"
-                                    >
-                                        <RefreshIcon className="w-3 h-3" /> Clear Paint
-                                    </button>
-                                )}
                             </div>
 
                             {renderCharacterInserter('edit')}
@@ -3568,48 +3514,65 @@ const App: React.FC = () => {
                     setter: setShowHistoryPanel,
                     title: 'History',
                     content: (
-                        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                            {generationHistory.length === 0 && <p className="text-gray-500 text-sm text-center">No history yet.</p>}
-                            {generationHistory.map((item, index) => (
-                                <div key={item.id} className={`p-3 rounded-lg border cursor-pointer transition-colors ${index === activeHistoryIndex ? 'bg-gray-800 border-indigo-500' : 'bg-gray-800/50 border-gray-700 hover:border-gray-600'}`} onClick={() => { setActiveHistoryIndex(index); setActiveVideoIndex(-1); setShowHistoryPanel(false); }}>
-                                    <div className="flex justify-between items-start mb-2">
-                                        <span className="text-xs font-bold text-gray-400">{new Date(item.id).toLocaleTimeString()}</span>
-                                        <button onClick={(e) => { e.stopPropagation(); handleRemoveHistoryItem(item.id); }} className="text-gray-500 hover:text-red-500"><TrashIcon className="w-4 h-4" /></button>
-                                    </div>
-                                    <p className="text-sm text-gray-200 line-clamp-2 mb-2">{item.prompt}</p>
-                                    <div className="flex gap-1 overflow-hidden h-12">
-                                        {item.imageSet.slice(0, 3).map((s, i) => (
-                                            s.src ? <img key={i} src={`data:image/png;base64,${s.src}`} className="h-full w-auto rounded" alt="" /> : <div key={i} className="h-full w-12 bg-gray-700 rounded animate-pulse" />
-                                        ))}
-                                    </div>
+                        <div className="flex flex-col h-full">
+                            <div className="p-4 border-b border-gray-800 shrink-0">
+                                <div className="flex bg-gray-800 p-1 rounded-lg">
+                                    <button
+                                        onClick={() => setHistoryFilter('all')}
+                                        className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-colors ${historyFilter === 'all' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-700'}`}
+                                    >
+                                        All
+                                    </button>
+                                    <button
+                                        onClick={() => setHistoryFilter('saved')}
+                                        className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-colors ${historyFilter === 'saved' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-700'}`}
+                                    >
+                                        Saved
+                                    </button>
                                 </div>
-                            ))}
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                                {filteredHistory.length === 0 && <p className="text-gray-500 text-sm text-center">No {historyFilter === 'saved' ? 'saved' : ''} history yet.</p>}
+                                {filteredHistory.map((item) => {
+                                    const hasSavedScene = savedItems.some(savedItem => savedItem.id.startsWith(`${item.id}-`));
+                                    const activeIndex = generationHistory.findIndex(h => h.id === item.id);
+                                    return (
+                                        <div 
+                                            key={item.id} 
+                                            className={`p-3 rounded-lg border cursor-pointer transition-colors ${activeIndex === activeHistoryIndex ? 'bg-gray-800 border-indigo-500' : 'bg-gray-800/50 border-gray-700 hover:border-gray-600'}`} 
+                                            onClick={() => { setActiveHistoryIndex(activeIndex); setActiveVideoIndex(-1); setShowHistoryPanel(false); }}
+                                        >
+                                            <div className="flex justify-between items-center mb-2">
+                                                <span className="text-xs font-bold text-gray-400">{new Date(item.id).toLocaleTimeString()}</span>
+                                                <div className="flex items-center gap-2">
+                                                    {hasSavedScene && <BookmarkIcon className="w-4 h-4 text-indigo-400" solid />}
+                                                    <button onClick={(e) => { e.stopPropagation(); handleRemoveHistoryItem(item.id); }} className="text-gray-500 hover:text-red-500"><TrashIcon className="w-4 h-4" /></button>
+                                                </div>
+                                            </div>
+                                            <p className="text-sm text-gray-200 line-clamp-2 mb-2">{item.prompt}</p>
+                                            <div className="flex gap-1 overflow-hidden h-12">
+                                                {item.imageSet.slice(0, 5).map((s, i) => {
+                                                    const isSceneSaved = savedItems.some(saved => saved.id === `${item.id}-${i}`);
+                                                    return (
+                                                        <div key={i} className="relative h-full shrink-0">
+                                                            {s.src ? <img src={`data:image/png;base64,${s.src}`} className="h-full w-auto rounded" alt="" /> : <div className="h-full aspect-video w-auto bg-gray-700 rounded animate-pulse" />}
+                                                            {isSceneSaved && (
+                                                                <div className="absolute top-1 right-1 bg-indigo-600/80 rounded-full p-0.5 backdrop-blur-sm">
+                                                                    <BookmarkIcon className="w-2.5 h-2.5 text-white" solid />
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )
+                                                })}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
                         </div>
                     )
                 },
-                {
-                    show: showSavedPanel,
-                    setter: setShowSavedPanel,
-                    title: 'Saved Scenes',
-                    content: (
-                        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                            {savedItems.length === 0 && <p className="text-gray-500 text-sm text-center">No saved scenes.</p>}
-                            {savedItems.map((item) => (
-                                <div key={item.id} className="p-3 bg-gray-800 rounded-lg border border-gray-700">
-                                    <div className="aspect-video bg-black/50 rounded overflow-hidden mb-2 relative">
-                                        {item.scene.src && <img src={`data:image/png;base64,${item.scene.src}`} className="w-full h-full object-cover" alt="" />}
-                                    </div>
-                                    <p className="text-xs text-gray-300 line-clamp-2 mb-2">{item.originalPrompt}</p>
-                                    <div className="flex gap-2">
-                                        <button onClick={() => restoreSavedItem(item)} className="flex-1 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded hover:bg-indigo-500">Restore</button>
-                                        <button onClick={() => unsaveScene(item.id)} className="p-1.5 text-gray-400 hover:text-red-500 border border-gray-600 rounded hover:border-red-500"><TrashIcon className="w-4 h-4" /></button>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    )
-                }
-            ].map((panel, idx) => (
+            ].filter(Boolean).map((panel, idx) => (
                 <div 
                     key={idx}
                     className={`fixed inset-y-0 right-0 w-full md:w-[500px] bg-gray-900 shadow-2xl transform transition-transform duration-300 ease-in-out z-50 border-l border-gray-700 flex flex-col ${panel.show ? 'translate-x-0' : 'translate-x-full'}`}
@@ -3618,8 +3581,7 @@ const App: React.FC = () => {
                         <h2 className="text-xl font-bold text-white flex items-center gap-2">
                              {panel.title === 'Storybook' && <BookOpenIcon className="w-5 h-5 text-indigo-500" />}
                              {panel.title === 'History' && <HistoryIcon className="w-5 h-5 text-gray-400" />}
-                             {panel.title === 'Saved Scenes' && <BookmarkIcon className="w-5 h-5 text-indigo-400" solid />}
-                             {panel.title !== 'Storybook' && panel.title !== 'History' && panel.title !== 'Saved Scenes' && panel.title}
+                             {panel.title}
                         </h2>
                         <button onClick={() => panel.setter(false)} className="p-2 text-gray-500 hover:text-white rounded hover:bg-gray-800 transition-colors">
                             <XIcon className="w-6 h-6" />
@@ -3631,6 +3593,28 @@ const App: React.FC = () => {
             {zoomedImage && (
                 <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setZoomedImage(null)}>
                     <img src={zoomedImage.startsWith('data:') ? zoomedImage : `data:image/png;base64,${zoomedImage}`} alt="Zoomed view" className="max-w-full max-h-full object-contain rounded-lg shadow-2xl animate-in fade-in zoom-in-75" />
+                </div>
+            )}
+             {confirmationModal.isOpen && (
+                <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-gray-800 rounded-lg max-w-md w-full p-6 shadow-2xl border border-gray-700 animate-in fade-in zoom-in-95">
+                        <h3 className="text-lg font-bold text-white mb-2">{confirmationModal.title}</h3>
+                        <p className="text-sm text-gray-400 mb-6">{confirmationModal.message}</p>
+                        <div className="flex justify-end gap-3">
+                            <button
+                                onClick={confirmationModal.onCancel}
+                                className="px-4 py-2 rounded-lg text-gray-300 font-bold bg-gray-700 hover:bg-gray-600 transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={confirmationModal.onConfirm}
+                                className="px-4 py-2 rounded-lg text-white font-bold bg-indigo-600 hover:bg-indigo-500 transition-colors"
+                            >
+                                OK
+                            </button>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>
