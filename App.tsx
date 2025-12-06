@@ -1,10 +1,10 @@
 
-
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+// FIX: Added generateVideoFromScene and generateScenesFromNarrative to the import.
 import { generateImageSet, generateVideoFromScene, StoryboardScene, generatePromptFromAudio, generateCharacterDescription, AudioOptions, generateSingleImage, Character, generateCameraAnglesFromImage, editImage, EditImageParams, CAMERA_MOVEMENT_PROMPTS, generateStructuredStory, Storybook, generateScenesFromNarrative, generateStorybookSpeech, PREBUILT_VOICES, VOICE_EXPRESSIONS, StorybookParts, ACCENT_OPTIONS, CAMERA_ANGLE_OPTIONS, generateCharacterVisual, describeImageForConsistency } from './services/geminiService';
 import { fileToBase64, base64ToBytes, compressImageBase64, pcmToWavBlob } from './utils/fileUtils';
 import { parseErrorMessage } from './utils/errorUtils';
-import { SparklesIcon, LoaderIcon, DownloadIcon, VideoIcon, PlusCircleIcon, ChevronLeftIcon, ChevronRightIcon, UserPlusIcon, XCircleIcon, RefreshIcon, TrashIcon, XIcon, BookmarkIcon, HistoryIcon, UploadIcon, CameraIcon, UndoIcon, MusicalNoteIcon, BookOpenIcon, ClipboardIcon, CheckIcon, DocumentMagnifyingGlassIcon, SpeakerWaveIcon, ChevronDownIcon, LockClosedIcon, LockOpenIcon, ClapperboardIcon, SaveIcon, StopIcon, ChartBarIcon } from './components/Icons';
+import { SparklesIcon, LoaderIcon, DownloadIcon, VideoIcon, PlusCircleIcon, ChevronLeftIcon, ChevronRightIcon, UserPlusIcon, XCircleIcon, RefreshIcon, TrashIcon, XIcon, BookmarkIcon, HistoryIcon, UploadIcon, CameraIcon, UndoIcon, MusicalNoteIcon, BookOpenIcon, ClipboardIcon, CheckIcon, DocumentMagnifyingGlassIcon, SpeakerWaveIcon, ChevronDownIcon, LockClosedIcon, LockOpenIcon, ClapperboardIcon, SaveIcon, StopIcon, ChartBarIcon, RedoIcon } from './components/Icons';
 
 type AppStatus = {
   status: 'idle' | 'loading' | 'error';
@@ -208,8 +208,9 @@ const App: React.FC = () => {
     const [imageCount, setImageCount] = useState<number>(1);
     const [aspectRatio, setAspectRatio] = useState<string>('16:9');
     const [imageStyle, setImageStyle] = useState<string>('Afro-toon');
-    const [imageModel, setImageModel] = useState<string>('gemini-3-pro-image-preview');
-    const [videoModel, setVideoModel] = useState<string>('veo-2-fast-generate-preview');
+    const [imageModel, setImageModel] = useState<string>('gemini-2.5-flash-image');
+    // FIX: Updated default video model to a current, valid model as per guidelines.
+    const [videoModel, setVideoModel] = useState<string>('veo-3.1-fast-generate-preview');
     const [genre, setGenre] = useState<string>('General');
     const [appStatus, setAppStatus] = useState<AppStatus>({ status: 'idle', error: null });
     const [statusMessage, setStatusMessage] = useState<string>('');
@@ -745,10 +746,20 @@ const App: React.FC = () => {
                 wantsDialogue,
                 signal
             );
+            const scenesWithDefaults = newStoryParts.scenes.map(scene => ({
+                ...scene,
+                id: scene.id || Date.now() + Math.random(),
+                isDescriptionLocked: true,
+                isNarrationLocked: true,
+                audioSrc: null,
+                isGeneratingAudio: false,
+                selectedVoice: 'Kore',
+                selectedExpression: 'Storytelling',
+            }));
             setStorybookContent(prev => ({
                 ...prev,
                 storyNarrative: newStoryParts.storyNarrative,
-                scenes: newStoryParts.scenes
+                scenes: scenesWithDefaults
             }));
             setIsAiStoryHelpMode(false);
         } catch (error) {
@@ -795,9 +806,19 @@ const App: React.FC = () => {
                 wantsDialogueForAnalysis,
                 signal
             );
+            const scenesWithDefaults = newScenes.map(scene => ({
+                ...scene,
+                id: scene.id || Date.now() + Math.random(),
+                isDescriptionLocked: true,
+                isNarrationLocked: true,
+                audioSrc: null,
+                isGeneratingAudio: false,
+                selectedVoice: 'Kore',
+                selectedExpression: 'Storytelling',
+            }));
             setStorybookContent(current => ({
                 ...current,
-                scenes: newScenes
+                scenes: scenesWithDefaults
             }));
         } catch (error) {
             if (handleApiKeyError(error)) return;
@@ -1081,8 +1102,8 @@ const App: React.FC = () => {
                 id: Date.now(), 
                 imageDescription: '', 
                 narration: '',
-                isDescriptionLocked: false,
-                isNarrationLocked: false,
+                isDescriptionLocked: true,
+                isNarrationLocked: true,
                 audioSrc: null,
                 isGeneratingAudio: false,
                 selectedVoice: 'Kore',
@@ -2018,7 +2039,7 @@ const App: React.FC = () => {
                         ...item,
                         imageSet: item.imageSet.map((s, i) =>
                             i === editingScene.sceneIndex
-                                ? { ...s, isEditing: false } 
+                                ? { ...s, isEditing: false, src: editingScene.previousSrc } // Revert to original on cancel
                                 : s
                         )
                     };
@@ -2029,28 +2050,47 @@ const App: React.FC = () => {
         }
     };
 
+    const saveAndCloseEditing = () => {
+        if (!editingScene) return;
+        setGenerationHistory(prev => prev.map(item => {
+            if (item.id === editingScene.generationId) {
+                return {
+                    ...item,
+                    imageSet: item.imageSet.map((s, i) =>
+                        i === editingScene.sceneIndex
+                            // Save the current state of the image from the modal
+                            ? { ...s, isEditing: false, src: editingScene.src, prompt: `(Edited) ${s.prompt}` }
+                            : s
+                    )
+                };
+            }
+            return item;
+        }));
+        setEditingScene(null);
+    };
+
     const handleUndoEdit = () => {
         setEditingScene(prev => {
             if (!prev || prev.editHistoryIndex <= 0) return prev;
-            
             const newIndex = prev.editHistoryIndex - 1;
             const previousImage = prev.editHistory[newIndex];
-            
-            // Side-effect: Sync main history for consistency.
-            // Using a callback inside setGenerationHistory ensures we don't depend on stale generationHistory.
-            setGenerationHistory(hist => hist.map(item => {
-                if (item.id === prev.generationId) {
-                    return {
-                        ...item,
-                        imageSet: item.imageSet.map((s, i) => i === prev.sceneIndex ? { ...s, src: previousImage, error: null } : s)
-                    };
-                }
-                return item;
-            }));
-
             return {
                 ...prev,
                 src: previousImage,
+                editHistoryIndex: newIndex,
+                error: null
+            };
+        });
+    };
+    
+    const handleRedoEdit = () => {
+        setEditingScene(prev => {
+            if (!prev || prev.editHistoryIndex >= prev.editHistory.length - 1) return prev;
+            const newIndex = prev.editHistoryIndex + 1;
+            const nextImage = prev.editHistory[newIndex];
+            return {
+                ...prev,
+                src: nextImage,
                 editHistoryIndex: newIndex,
                 error: null
             };
@@ -2074,7 +2114,7 @@ const App: React.FC = () => {
         }
     };
 
-    const submitEdit = async () => {
+    const generateEditVariation = async () => {
         if (!editingScene || !editingScene.src) return;
     
         const generationItem = generationHistory.find(item => item.id === editingScene.generationId);
@@ -2103,7 +2143,7 @@ const App: React.FC = () => {
         
         if (!editingScene.editPrompt.trim() && !hasVisualMasks && !editingScene.overlayImage) return;
     
-        setEditingScene({ ...editingScene, isRegenerating: true, error: null });
+        setEditingScene(prev => prev ? { ...prev, isRegenerating: true, error: null } : null);
         const signal = startOperation();
     
         try {
@@ -2123,46 +2163,37 @@ const App: React.FC = () => {
     
             if (src && !error) {
                 incrementCount('images', 1);
-                setZoomedImage(src);
-    
-                const newScene: AppStoryboardScene = {
-                    src,
-                    prompt: `Edited: ${editingScene.editPrompt || 'Visual Edit'}`,
-                    error: null,
-                    isCameraAngleFor: editingScene.isCameraAngleFor,
-                };
-    
-                const parentVideoState = generationItem.videoStates[editingScene.sceneIndex];
-                const newVideoState: VideoState = { ...parentVideoState, status: 'idle', clips: [], currentClipIndex: -1, error: null, loadingMessage: '' };
-    
-                setGenerationHistory(prev => prev.map(item => {
-                    if (item.id === editingScene.generationId) {
-                        const updatedImageSet = item.imageSet.map((s, i) => i === editingScene.sceneIndex ? { ...s, isEditing: false } : s);
-                        const updatedVideoStates = [...item.videoStates];
-                        updatedImageSet.splice(editingScene.sceneIndex + 1, 0, newScene);
-                        updatedVideoStates.splice(editingScene.sceneIndex + 1, 0, newVideoState);
-                        return { ...item, imageSet: updatedImageSet, videoStates: updatedVideoStates };
-                    }
-                    return item;
-                }));
-    
-                setEditingScene(null);
+                
+                setEditingScene(prev => {
+                    if (!prev) return null;
+                    const newHistory = prev.editHistory.slice(0, prev.editHistoryIndex + 1);
+                    newHistory.push(src);
+                    return {
+                        ...prev,
+                        src,
+                        isRegenerating: false,
+                        editHistory: newHistory,
+                        editHistoryIndex: newHistory.length - 1,
+                        error: null,
+                    };
+                });
+                clearCanvas();
     
             } else {
-                setEditingScene({ ...editingScene, isRegenerating: false, error });
+                setEditingScene(prev => prev ? { ...prev, isRegenerating: false, error } : null);
             }
     
         } catch (err) {
             if (handleApiKeyError(err)) {
-                setEditingScene({ ...editingScene, isRegenerating: false });
+                setEditingScene(prev => prev ? { ...prev, isRegenerating: false } : null);
                 return;
             };
             const parsedError = parseErrorMessage(err);
             if (parsedError === 'Aborted') {
-                setEditingScene({ ...editingScene, isRegenerating: false, error: 'Stopped.' });
+                setEditingScene(prev => prev ? { ...prev, isRegenerating: false, error: 'Stopped.' } : null);
                 return;
             }
-            setEditingScene({ ...editingScene, isRegenerating: false, error: parsedError });
+            setEditingScene(prev => prev ? { ...prev, isRegenerating: false, error: parsedError } : null);
         } finally {
             abortControllerRef.current = null;
         }
@@ -2497,8 +2528,7 @@ const App: React.FC = () => {
                     <SparklesIcon className="w-16 h-16 mx-auto text-indigo-400 mb-4" />
                     <h1 className="text-3xl font-bold text-gray-100 mb-2">Welcome to Story Weaver</h1>
                     <p className="text-gray-400 mb-6">
-                        This application uses advanced generative models like Veo for video and Text-to-Speech. 
-                        To use these features, you must select an API key that has access to these models.
+                        This application uses advanced models like <strong>Veo</strong> for video and <strong>Gemini 3 Pro</strong> for images, which require an API key from a <strong>paid Google Cloud project</strong>. Please select a key with the "Generative AI API" enabled.
                     </p>
                     <button
                         onClick={handleSelectKey}
@@ -2772,8 +2802,8 @@ const App: React.FC = () => {
                             onChange={(e) => setImageModel(e.target.value)}
                             className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
                         >
-                            <option value="gemini-3-pro-image-preview">Gemini 3 Pro (High Quality)</option>
                             <option value="gemini-2.5-flash-image">Gemini Flash (Fast)</option>
+                            <option value="gemini-3-pro-image-preview">Gemini 3 Pro (High Quality)</option>
                             <option value="imagen-4.0-generate-001">Imagen 4 (Legacy)</option>
                         </select>
                     </div>
@@ -2784,10 +2814,9 @@ const App: React.FC = () => {
                             onChange={(e) => setVideoModel(e.target.value)}
                             className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
                         >
-                            <option value="veo-2-fast-generate-preview">Veo 2 (Fast)</option>
-                            <option value="veo-2-generate-preview">Veo 2 (High Quality)</option>
-                            <option value="veo-3.1-fast-generate-preview">Veo 3.1 (Fast)</option>
-                            <option value="veo-3.1-generate-preview">Veo 3.1 (High Quality)</option>
+                            {/* FIX: Removed deprecated Veo 2 models and simplified names for Veo 3.1. */}
+                            <option value="veo-3.1-fast-generate-preview">Veo (Fast - Recommended)</option>
+                            <option value="veo-3.1-generate-preview">Veo (High Quality)</option>
                         </select>
                     </div>
                     <div className="space-y-1 col-span-2">
@@ -3084,7 +3113,7 @@ const App: React.FC = () => {
 
             {editingScene && (
                 <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" onClick={cancelEditing}>
-                    <div className="bg-gray-800 rounded-lg w-full max-w-3xl flex flex-col md:flex-row overflow-hidden shadow-2xl h-[90vh] md:h-auto" onClick={(e) => e.stopPropagation()}>
+                    <div className="bg-gray-800 rounded-lg w-full max-w-4xl flex flex-col md:flex-row overflow-hidden shadow-2xl h-[90vh] md:h-auto" onClick={(e) => e.stopPropagation()}>
                         <div className="flex-1 bg-black flex items-center justify-center min-h-[300px] overflow-hidden relative">
                              {editingScene.isRegenerating ? (
                                 <div className="text-center text-indigo-400">
@@ -3107,21 +3136,21 @@ const App: React.FC = () => {
                                     />
                                 </div>
                              )}
-                             {editingScene.editHistoryIndex > 0 && !editingScene.isRegenerating && (
-                                <button onClick={handleUndoEdit} className="absolute top-2 left-2 px-2 py-1 bg-black/50 text-white text-xs rounded hover:bg-indigo-600 z-10">
-                                    <UndoIcon className="w-3 h-3 mr-1 inline"/>Undo
-                                </button>
-                             )}
-                             
                         </div>
-                        <div className="w-full md:w-72 p-4 flex flex-col border-l border-gray-700 bg-gray-800">
+                        <div className="w-full md:w-80 p-4 flex flex-col border-l border-gray-700 bg-gray-800">
                             <div className="flex justify-between items-center mb-4">
                                 <h3 className="font-bold text-gray-200">Edit Image</h3>
-                                <button onClick={cancelEditing}><XIcon className="w-5 h-5 text-gray-500 hover:text-white" /></button>
+                                <button onClick={saveAndCloseEditing}><XIcon className="w-5 h-5 text-gray-500 hover:text-white" /></button>
                             </div>
                             
                             <div className="mb-4">
-                                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">Instructions</label>
+                                 <div className="flex justify-between items-center mb-2">
+                                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Instructions</label>
+                                    <div className="flex items-center gap-1">
+                                        <button onClick={handleUndoEdit} disabled={editingScene.editHistoryIndex <= 0} className="p-1 rounded text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-700 transition-colors" title="Undo"><UndoIcon className="w-4 h-4" /></button>
+                                        <button onClick={handleRedoEdit} disabled={editingScene.editHistoryIndex >= editingScene.editHistory.length - 1} className="p-1 rounded text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-700 transition-colors" title="Redo"><RedoIcon className="w-4 h-4" /></button>
+                                    </div>
+                                </div>
                                 <textarea
                                     ref={editPromptTextAreaRef}
                                     value={editingScene.editPrompt}
@@ -3217,24 +3246,29 @@ const App: React.FC = () => {
 
                             {renderCharacterInserter('edit')}
                             
-                            <div className="mt-auto pt-4">
+                            <div className="mt-auto pt-4 flex flex-col gap-2">
                                 {editingScene.isRegenerating ? (
                                     <button
                                         onClick={handleStopGeneration}
                                         className="w-full py-3 bg-red-600 text-white font-bold rounded hover:bg-red-500 shadow-lg"
                                     >
-                                        Stop Editing
+                                        Stop
                                     </button>
                                 ) : (
                                     <button
-                                        onClick={submitEdit}
+                                        onClick={generateEditVariation}
                                         disabled={(!editingScene.editPrompt.trim() && !hasDrawn && !editingScene.overlayImage)}
                                         className="w-full py-3 bg-indigo-600 text-white font-bold rounded hover:bg-indigo-500 disabled:bg-gray-600 disabled:cursor-not-allowed shadow-lg flex items-center justify-center gap-2"
                                     >
                                         <SparklesIcon className="w-4 h-4" />
-                                        {hasDrawn ? 'Apply Visual Edit' : (editingScene.overlayImage ? 'Composite Image' : 'Apply Text Edit')}
+                                        Apply Edit
                                     </button>
                                 )}
+                                <div className="flex justify-around items-center">
+                                    <button onClick={cancelEditing} className="px-4 py-2 text-xs text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors">Cancel</button>
+                                    <button onClick={saveAndCloseEditing} className="px-4 py-2 text-xs font-bold text-white bg-green-600 hover:bg-green-500 rounded transition-colors">Save & Close</button>
+                                </div>
+
                                 {editingScene.error && <p className="mt-2 text-xs text-red-400 bg-red-900/20 p-2 rounded">{editingScene.error}</p>}
                             </div>
                         </div>
@@ -3382,7 +3416,12 @@ const App: React.FC = () => {
                                             </label>
                                         </div>
                                     </div>
-                                    <label className="text-sm font-bold text-gray-400 block mb-2">Story Narrative</label>
+                                    <div className="flex justify-between items-center mb-2">
+                                        <label className="text-sm font-bold text-gray-400">Story Narrative</label>
+                                        <button onClick={() => handleCopyToClipboard(storybookContent.storyNarrative, 'storybook-narrative')} className="text-gray-500 hover:text-green-400 transition-colors" title="Copy Narrative">
+                                            {copiedId === 'storybook-narrative' ? <CheckIcon className="w-4 h-4 text-green-400" /> : <ClipboardIcon className="w-4 h-4" />}
+                                        </button>
+                                    </div>
                                     
                                     <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700 shadow-inner">
                                         <textarea
@@ -3487,6 +3526,9 @@ const App: React.FC = () => {
                                                      <div className="flex justify-between mb-1">
                                                         <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">VISUAL PROMPT</label>
                                                         <div className="flex gap-2">
+                                                            <button onClick={() => handleCopyToClipboard(scene.imageDescription, `desc-${scene.id}`)} className="text-gray-500 hover:text-green-400 transition-colors" title="Copy">
+                                                                {copiedId === `desc-${scene.id}` ? <CheckIcon className="w-3 h-3 text-green-400" /> : <ClipboardIcon className="w-3 h-3" />}
+                                                            </button>
                                                             <button onClick={() => handleSceneLockToggle(scene.id, 'description')} className="text-gray-500 hover:text-gray-300 transition-colors">{scene.isDescriptionLocked ? <LockClosedIcon className="w-3 h-3" /> : <LockOpenIcon className="w-3 h-3" />}</button>
                                                             <button onClick={() => handleGenerateSceneFromStorybook(index, scene.imageDescription)} className="text-indigo-400 hover:text-indigo-300 transition-colors" title="Generate Image"><SparklesIcon className="w-3 h-3" /></button>
                                                         </div>
@@ -3504,7 +3546,9 @@ const App: React.FC = () => {
                                                         <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">NARRATION / SCRIPT</label>
                                                         <div className="flex gap-2">
                                                             <button onClick={() => handleSceneLockToggle(scene.id, 'narration')} className="text-gray-500 hover:text-gray-300 transition-colors">{scene.isNarrationLocked ? <LockClosedIcon className="w-3 h-3" /> : <LockOpenIcon className="w-3 h-3" />}</button>
-                                                            <button onClick={() => handleCopyToClipboard(scene.narration, `narr-${scene.id}`)} className="text-gray-500 hover:text-green-400 transition-colors" title="Copy"><ClipboardIcon className="w-3 h-3" /></button>
+                                                            <button onClick={() => handleCopyToClipboard(scene.narration, `narr-${scene.id}`)} className="text-gray-500 hover:text-green-400 transition-colors" title="Copy">
+                                                                {copiedId === `narr-${scene.id}` ? <CheckIcon className="w-3 h-3 text-green-400" /> : <ClipboardIcon className="w-3 h-3" />}
+                                                            </button>
                                                         </div>
                                                      </div>
                                                     <textarea

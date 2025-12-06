@@ -284,7 +284,21 @@ export const UndoIcon: React.FC<IconProps> = ({ className }) => (
     >
       <path strokeLinecap="round" strokeLinejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" />
     </svg>
-  );
+);
+
+export const RedoIcon: React.FC<IconProps> = ({ className }) => (
+    <svg 
+      className={className} 
+      aria-hidden="true" 
+      xmlns="http://www.w3.org/2000/svg" 
+      fill="none" 
+      viewBox="0 0 24 24" 
+      strokeWidth={1.5} 
+      stroke="currentColor"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 15l6-6m0 0l-6-6m6 6H9a6 6 0 000 12h3" />
+    </svg>
+);
   
 export const MusicalNoteIcon: React.FC<IconProps> = ({ className }) => (
     <svg 
@@ -449,7 +463,7 @@ export const SaveIcon: React.FC<IconProps> = ({ className }) => (
     {/* Actual Floppy Disk Path */}
     <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 4.5h1.5a.75.75 0 01.75.75v3a.75.75 0 01-.75.75h-1.5a.75.75 0 01-.75-.75v-3a.75.75 0 01.75-.75z" />
     <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" className="hidden"/>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M6 3.75h12a2.25 2.25 0 012.25 2.25v12a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25v-12A2.25 2.25 0 016 3.75z" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M6 3.75h12a2.25 2.25 0 012.25 2.25v12a2.25 2.25 0 01-2.25-2.25H6a2.25 2.25 0 01-2.25-2.25v-12A2.25 2.25 0 016 3.75z" />
     <path strokeLinecap="round" strokeLinejoin="round" d="M9 20.25v-5.25a.75.75 0 01.75-.75h4.5a.75.75 0 01.75.75v5.25" />
   </svg>
 );
