@@ -1,7 +1,7 @@
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 // FIX: Added generateVideoFromScene and generateScenesFromNarrative to the import.
-import { generateImageSet, generateVideoFromScene, StoryboardScene, generatePromptFromAudio, generateCharacterDescription, AudioOptions, generateSingleImage, Character, generateCameraAnglesFromImage, editImage, EditImageParams, CAMERA_MOVEMENT_PROMPTS, generateStructuredStory, Storybook, generateScenesFromNarrative, generateStorybookSpeech, PREBUILT_VOICES, VOICE_EXPRESSIONS, StorybookParts, ACCENT_OPTIONS, CAMERA_ANGLE_OPTIONS, generateCharacterVisual, describeImageForConsistency } from './services/geminiService';
+import { generateImageSet, generateVideoFromScene, StoryboardScene, generatePromptFromAudio, generateCharacterDescription, AudioOptions, generateSingleImage, Character, generateCameraAnglesFromImage, editImage, EditImageParams, CAMERA_MOVEMENT_PROMPTS, generateStructuredStory, Storybook, generateScenesFromNarrative, generateStorybookSpeech, PREBUILT_VOICES, VOICE_EXPRESSIONS, StorybookParts, ACCENT_OPTIONS, CAMERA_ANGLE_OPTIONS, generateCharacterVisual, describeImageForConsistency, generateVideoFromImages } from './services/geminiService';
 import { fileToBase64, base64ToBytes, compressImageBase64, pcmToWavBlob } from './utils/fileUtils';
 import { parseErrorMessage } from './utils/errorUtils';
 import { SparklesIcon, LoaderIcon, DownloadIcon, VideoIcon, PlusCircleIcon, ChevronLeftIcon, ChevronRightIcon, UserPlusIcon, XCircleIcon, RefreshIcon, TrashIcon, XIcon, BookmarkIcon, HistoryIcon, UploadIcon, CameraIcon, UndoIcon, MusicalNoteIcon, BookOpenIcon, ClipboardIcon, CheckIcon, DocumentMagnifyingGlassIcon, SpeakerWaveIcon, ChevronDownIcon, LockClosedIcon, LockOpenIcon, ClapperboardIcon, SaveIcon, StopIcon, CreditCardIcon, ExclamationTriangleIcon, RedoIcon } from './components/Icons';
@@ -103,7 +103,7 @@ type ConfirmationModalState = {
 
 type GenerationModalState = {
     isOpen: boolean;
-    type: 'image' | 'video';
+    type: 'image' | 'video' | 'animation';
     target: { generationId: number; sceneIndex: number; extend: boolean };
     model: string;
     onConfirm: (model: string) => void;
@@ -337,7 +337,13 @@ const App: React.FC = () => {
     const [selectedAngle, setSelectedAngle] = useState<string | null>(null);
     const [focusSubject, setFocusSubject] = useState<string>('General Scene');
     const [charactersForAngleModal, setCharactersForAngleModal] = useState<Character[]>([]);
-    const initialUploadFileInputRef = useRef<HTMLInputElement>(null);
+    
+    // New state for Animate with Images panel
+    const [isAnimationPanelOpen, setIsAnimationPanelOpen] = useState(false);
+    const [animationMode, setAnimationMode] = useState<'start' | 'startEnd' | 'reference'>('start');
+    const [animationImages, setAnimationImages] = useState<( { base64: string; mimeType: string; file: File } | null)[]>([null, null, null]);
+    const [animationPrompt, setAnimationPrompt] = useState('');
+    const animateImageRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
 
     // Canvas drawing states for editing
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1702,6 +1708,98 @@ const App: React.FC = () => {
         });
     }, [prompt, appStatus.status, imageModel, executeBatchGeneration]);
 
+    const handleAnimationImageUpload = async (e: React.ChangeEvent<HTMLInputElement>, index: number) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        e.target.value = '';
+    
+        try {
+            const { base64, mimeType } = await compressImageBase64(
+                await fileToBase64(file),
+                file.type,
+                1024,
+                1024,
+                0.9
+            );
+            const newImages = [...animationImages];
+            newImages[index] = { base64, mimeType, file };
+            setAnimationImages(newImages);
+        } catch (error) {
+            setAppStatus({ status: 'error', error: `Failed to load image: ${parseErrorMessage(error)}` });
+        }
+    };
+    
+    const handleGenerateFromImages = useCallback(async (modelToUse: string) => {
+        setAppStatus({ status: 'loading', error: null });
+        setStatusMessage('Starting video generation...');
+        const signal = startOperation();
+    
+        try {
+            const { videoUrl, videoObject } = await generateVideoFromImages(
+                animationMode,
+                animationImages,
+                animationPrompt,
+                modelToUse,
+                aspectRatio,
+                '720p',
+                (message) => setStatusMessage(message),
+                signal
+            );
+    
+            if (videoUrl) {
+                incrementCount('videos', 1, modelToUse);
+    
+                const newScene: AppStoryboardScene = {
+                    src: animationImages[0]?.base64 || null,
+                    prompt: `Animated: ${animationImages[0]?.file.name || 'uploaded image'}`,
+                };
+    
+                const newVideoState: VideoState = {
+                    status: 'success',
+                    clips: [{ videoUrl, audioUrl: null, videoObject, audioBase64: null }],
+                    currentClipIndex: 0,
+                    error: null,
+                    loadingMessage: '',
+                    showScriptInput: false,
+                    scriptPrompt: animationPrompt,
+                    voiceoverMode: 'tts',
+                    voiceoverFile: null,
+                    speaker: 'Narrator',
+                    cameraMovement: 'Static Hold',
+                };
+    
+                const newHistoryItem: GenerationItem = {
+                    id: Date.now(),
+                    prompt: `Animation from ${animationMode}`,
+                    imageSet: [newScene],
+                    videoStates: [newVideoState],
+                    aspectRatio,
+                    imageStyle: 'From Image',
+                    genre: 'General',
+                    characters: [],
+                    imageModel: imageModel,
+                };
+    
+                const newHistory = [...generationHistory, newHistoryItem];
+                setGenerationHistory(newHistory);
+                setActiveHistoryIndex(newHistory.length - 1);
+            }
+    
+            setAppStatus({ status: 'idle', error: null });
+            setStatusMessage('');
+            // Reset panel after successful generation
+            setAnimationImages([null, null, null]);
+            setAnimationPrompt('');
+    
+        } catch (error) {
+            if (handleApiKeyError(error)) return;
+            const parsedError = parseErrorMessage(error);
+            setAppStatus({ status: 'error', error: parsedError });
+        } finally {
+            abortControllerRef.current = null;
+            setStatusMessage('');
+        }
+    }, [animationMode, animationImages, animationPrompt, aspectRatio, imageModel, incrementCount, generationHistory]);
 
     const handleRegenerateScene = useCallback(async (generationId: number, sceneIndex: number, modelToUse: string) => {
         const generationItem = generationHistory.find(item => item.id === generationId);
@@ -1972,11 +2070,15 @@ const App: React.FC = () => {
         }
     }, [generationHistory, incrementCount]);
 
-    const openConfirmationModal = (type: 'image' | 'video', generationId: number, sceneIndex: number, extend = false) => {
-        const generationItem = generationHistory.find(item => item.id === generationId);
-        if (!generationItem) return;
-    
-        const defaultModel = type === 'image' ? generationItem.imageModel : videoModel;
+    const openConfirmationModal = (type: 'image' | 'video' | 'animation', generationId: number, sceneIndex: number, extend = false) => {
+        let defaultModel: string;
+        if (type === 'animation') {
+            defaultModel = videoModel;
+        } else {
+            const generationItem = generationHistory.find(item => item.id === generationId);
+            if (!generationItem) return;
+            defaultModel = type === 'image' ? generationItem.imageModel : videoModel;
+        }
     
         setGenerationModalState({
             isOpen: true,
@@ -1986,8 +2088,10 @@ const App: React.FC = () => {
             onConfirm: (selectedModel: string) => {
                 if (type === 'image') {
                     handleRegenerateScene(generationId, sceneIndex, selectedModel);
-                } else {
+                } else if (type === 'video') {
                     handleGenerateVideo(generationId, sceneIndex, extend, selectedModel);
+                } else if (type === 'animation') {
+                    handleGenerateFromImages(selectedModel);
                 }
             },
         });
@@ -2493,84 +2597,6 @@ const App: React.FC = () => {
 
         setUploadedItems(prev => prev.filter(up => up.id !== item.id));
     };
-
-    const handleInitialImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-    
-        e.target.value = ''; // Reset for next upload
-    
-        setAppStatus({ status: 'loading', error: null });
-        setStatusMessage('Loading image...');
-    
-        try {
-            const base64 = await fileToBase64(file);
-            
-            const getAspectRatio = (imgSrc: string): Promise<string> => {
-                return new Promise(resolve => {
-                    const img = new Image();
-                    img.onload = () => {
-                        const ratio = img.width / img.height;
-                        if (Math.abs(ratio - 16/9) < 0.1) resolve('16:9');
-                        else if (Math.abs(ratio - 9/16) < 0.1) resolve('9:16');
-                        else if (Math.abs(ratio - 4/3) < 0.1) resolve('4:3');
-                        else if (Math.abs(ratio - 3/4) < 0.1) resolve('3:4');
-                        else if (Math.abs(ratio - 1) < 0.1) resolve('1:1');
-                        else resolve('16:9'); // Default if not a standard ratio
-                    };
-                    img.onerror = () => resolve('16:9'); // Default on error
-                    img.src = imgSrc;
-                });
-            };
-            
-            const detectedAspectRatio = await getAspectRatio(`data:${file.type};base64,${base64}`);
-    
-            const newScene: AppStoryboardScene = {
-                src: base64,
-                prompt: `Uploaded: ${file.name}`,
-                error: null,
-                isGenerating: false,
-                isRegenerating: false,
-            };
-    
-            const newVideoState: VideoState = {
-                status: 'idle',
-                clips: [],
-                currentClipIndex: -1,
-                error: null,
-                loadingMessage: '',
-                showScriptInput: false,
-                scriptPrompt: '',
-                voiceoverMode: 'tts',
-                voiceoverFile: null,
-                speaker: 'Narrator',
-                cameraMovement: 'Static Hold',
-            };
-    
-            const newHistoryItem: GenerationItem = {
-                id: Date.now(),
-                prompt: `Uploaded: ${file.name}`,
-                imageSet: [newScene],
-                videoStates: [newVideoState],
-                aspectRatio: detectedAspectRatio,
-                imageStyle: 'Realistic Photo',
-                genre: 'General',
-                characters: [],
-                imageModel: imageModel,
-            };
-            
-            const newHistory = [...generationHistory, newHistoryItem];
-            setGenerationHistory(newHistory);
-            setActiveHistoryIndex(newHistory.length - 1);
-            setAppStatus({ status: 'idle', error: null });
-            setStatusMessage('');
-    
-        } catch (error) {
-            const parsedError = parseErrorMessage(error);
-            setAppStatus({ status: 'error', error: `Failed to load image: ${parsedError}` });
-            setStatusMessage('');
-        }
-    };
     
 
     const handleAudioFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2899,6 +2925,88 @@ const App: React.FC = () => {
                     {renderCharacterInserter('prompt')}
                 </div>
 
+                {/* Animate with Images Panel */}
+                <div className="bg-gray-900/50 border border-gray-700 rounded-lg">
+                    <button
+                        onClick={() => setIsAnimationPanelOpen(prev => !prev)}
+                        className="w-full flex items-center justify-between p-3 text-sm font-bold text-gray-300 hover:bg-gray-700/50 rounded-t-lg"
+                    >
+                        <span className="flex items-center gap-2"><ClapperboardIcon className="w-4 h-4 text-indigo-400" /> Animate with Images</span>
+                        <ChevronDownIcon className={`w-4 h-4 transition-transform ${isAnimationPanelOpen ? 'rotate-180' : ''}`} />
+                    </button>
+                    {isAnimationPanelOpen && (
+                        <div className="p-3 border-t border-gray-700 space-y-4">
+                            <div>
+                                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Animation Mode</label>
+                                <div className="flex gap-1 bg-gray-800 p-1 rounded-lg mt-1">
+                                    {(['start', 'startEnd', 'reference'] as const).map(mode => (
+                                        <button
+                                            key={mode}
+                                            onClick={() => setAnimationMode(mode)}
+                                            className={`flex-1 py-1 text-[10px] font-bold rounded-md transition-colors ${animationMode === mode ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-700'}`}
+                                        >
+                                            {mode === 'start' && 'Start Frame'}
+                                            {mode === 'startEnd' && 'Start & End'}
+                                            {mode === 'reference' && 'Reference(s)'}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            
+                            <div className="grid grid-cols-3 gap-2">
+                                {([0, 1, 2] as const).map(index => {
+                                    let isVisible = false;
+                                    let label = '';
+                                    if (animationMode === 'start' && index === 0) { isVisible = true; label = 'Start Image'; }
+                                    if (animationMode === 'startEnd' && index < 2) { isVisible = true; label = index === 0 ? 'Start Image' : 'End Image'; }
+                                    if (animationMode === 'reference') { isVisible = true; label = `Ref #${index + 1}`; }
+
+                                    return (
+                                        <div key={index} className={`relative ${isVisible ? 'block' : 'hidden'}`}>
+                                            <input type="file" ref={animateImageRefs[index]} className="hidden" accept="image/*" onChange={(e) => handleAnimationImageUpload(e, index)} />
+                                            <button onClick={() => animateImageRefs[index].current?.click()} className="w-full h-24 bg-gray-900 border-2 border-dashed border-gray-700 rounded-lg flex flex-col items-center justify-center text-gray-500 hover:border-indigo-500 hover:text-indigo-400 transition-colors">
+                                                {animationImages[index] ? (
+                                                    <img src={`data:${animationImages[index]?.mimeType};base64,${animationImages[index]?.base64}`} alt={`Upload ${index + 1}`} className="w-full h-full object-cover rounded-md" />
+                                                ) : (
+                                                    <>
+                                                        <UploadIcon className="w-6 h-6 mb-1" />
+                                                        <span className="text-[10px] font-bold">{label}</span>
+                                                    </>
+                                                )}
+                                            </button>
+                                            {animationImages[index] && (
+                                                <button onClick={() => {
+                                                    const newImages = [...animationImages];
+                                                    newImages[index] = null;
+                                                    setAnimationImages(newImages);
+                                                }} className="absolute top-1 right-1 p-0.5 bg-black/60 rounded-full text-white hover:bg-red-600">
+                                                    <XIcon className="w-3 h-3" />
+                                                </button>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            <textarea
+                                value={animationPrompt}
+                                onChange={(e) => setAnimationPrompt(e.target.value)}
+                                placeholder="Animation prompt (e.g., a car driving away)..."
+                                className="w-full h-20 p-2 bg-gray-900 border border-gray-700 rounded text-sm resize-none focus:border-indigo-500"
+                            />
+
+                            <button
+                                onClick={() => openConfirmationModal('animation', -1, -1)}
+                                disabled={appStatus.status === 'loading' || isGenerationDisabled || !animationImages[0]}
+                                className="w-full flex items-center justify-center gap-2 py-2 bg-indigo-600 text-white font-bold rounded hover:bg-indigo-500 disabled:bg-gray-600 disabled:cursor-not-allowed"
+                            >
+                                <VideoIcon className="w-4 h-4" />
+                                Generate Video
+                            </button>
+                        </div>
+                    )}
+                </div>
+
                 {/* Characters Panel */}
                 <div className="space-y-3">
                     <div className="flex items-center justify-between">
@@ -3140,28 +3248,10 @@ const App: React.FC = () => {
                              <SparklesIcon className="w-12 h-12 text-indigo-500" />
                         </div>
                         <h2 className="text-xl font-bold text-gray-300">Start Creating</h2>
-                        <p className="max-w-sm mt-2 text-sm">Use the sidebar to describe your scenes, add characters, or ask AI for a story idea.</p>
-                        
-                        <div className="my-6 w-full max-w-xs flex items-center justify-center gap-4">
-                            <div className="h-px flex-1 bg-gray-700"></div>
-                            <span className="text-xs font-semibold text-gray-600 uppercase">OR</span>
-                            <div className="h-px flex-1 bg-gray-700"></div>
-                        </div>
-                
-                        <button
-                            onClick={() => initialUploadFileInputRef.current?.click()}
-                            className="flex items-center justify-center gap-2 py-3 px-6 bg-gray-700/50 border border-gray-600 text-gray-300 font-bold rounded-lg hover:bg-gray-700 hover:border-gray-500 transition-all shadow-sm"
-                        >
-                            <UploadIcon className="w-5 h-5" />
-                            Upload Image to Animate
-                        </button>
-                        <input
-                            type="file"
-                            ref={initialUploadFileInputRef}
-                            className="hidden"
-                            onChange={handleInitialImageUpload}
-                            accept="image/*"
-                        />
+                        <p className="max-w-sm mt-2 text-sm">
+                            Use the sidebar to describe your scenes, add characters,
+                            or use the 'Animate with Images' panel to generate video from your own pictures.
+                        </p>
                     </div>
                 )}
 
@@ -3632,12 +3722,28 @@ const App: React.FC = () => {
             )}
 
             {generationModalState.isOpen && (() => {
-                const isBatchGeneration = generationModalState.target.generationId === -1;
-                const options = generationModalState.type === 'image' ? imageModelOptions : videoModelOptions;
+                const isBatchGeneration = generationModalState.target.generationId === -1 && generationModalState.type === 'image';
+                const isAnimationGeneration = generationModalState.type === 'animation';
+                
+                const options = (generationModalState.type === 'image') ? imageModelOptions : videoModelOptions;
                 const costPerUnit = COST_MAP[generationModalState.model] || 0;
-                const totalCost = isBatchGeneration ? costPerUnit * imageCount : costPerUnit;
+                
+                let totalCost = 0;
+                if (isBatchGeneration) {
+                    totalCost = costPerUnit * imageCount;
+                } else {
+                    totalCost = costPerUnit; // for single regen, video, or animation
+                }
+
                 const displayCost = totalCost * selectedCurrencyInfo.rate;
-                const title = isBatchGeneration ? `Generate ${imageCount} Scene${imageCount > 1 ? 's' : ''}` : (generationModalState.type === 'image' ? 'Regenerate Image' : (generationModalState.target.extend ? 'Extend Video Clip' : 'Generate Video Clip'));
+                
+                let title = '';
+                if (isBatchGeneration) title = `Generate ${imageCount} Scene${imageCount > 1 ? 's' : ''}`;
+                else if (isAnimationGeneration) title = `Generate Animation`;
+                else if (generationModalState.type === 'image') title = 'Regenerate Image';
+                else if (generationModalState.target.extend) title = 'Extend Video Clip';
+                else title = 'Generate Video Clip';
+                
                 const costLabel = isBatchGeneration ? `Total Est. Cost (${imageCount}x):` : 'Estimated Cost:';
 
                 return (

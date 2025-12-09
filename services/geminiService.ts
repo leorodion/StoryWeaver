@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Type, GenerateContentResponse, Modality, Part, GenerateVideosOperation } from "@google/genai";
+import { GoogleGenAI, Type, GenerateContentResponse, Modality, Part, GenerateVideosOperation, VideoGenerationReferenceImage, VideoGenerationReferenceType } from "@google/genai";
 import { base64ToBytes, pcmToWavBlob } from "../utils/fileUtils";
 import { parseErrorMessage } from "../utils/errorUtils";
 
@@ -1010,131 +1010,178 @@ async function generateSpeech(
         throw error;
     }
 }
-
-export async function generateVideoFromScene(
-    scene: StoryboardScene,
-    aspectRatio: string,
-    script: string,
-    characters: Character[],
-    audioOptions: AudioOptions | null,
-    imageStyle: string,
-    videoModel: string,
-    resolution: '720p' | '1080p',
-    cameraMovement: string,
-    onProgress: (message: string) => void,
-    previousVideoObject: any | null = null,
+// FIX: Added missing functions generateStructuredStory, generateScenesFromNarrative, generateStorybookSpeech, and generateVideoFromScene.
+export async function generateStructuredStory(
+    prompt: string,
+    title: string,
+    characterNames: string[],
+    wantsDialogue: boolean,
     signal?: AbortSignal
-): Promise<{ videoUrl: string | null; audioUrl: string | null; videoObject: any; audioBase64: string | null }> {
-    if (!scene.src && !previousVideoObject) {
-        throw new Error("Cannot generate video without a source image or a previous clip to extend.");
-    }
-
+): Promise<StorybookParts> {
     const ai = getAiClient();
-    let audioBase64: string | null = null;
-    if (audioOptions) {
-        onProgress("Generating voiceover...");
-        if (audioOptions.mode === 'tts') {
-            audioBase64 = await generateSpeech(audioOptions.data, characters, imageStyle, signal);
-        } else {
-            audioBase64 = audioOptions.data;
-        }
-    }
+    const dialogueInstruction = wantsDialogue ? "The story should include dialogue between characters." : "The story should be purely narrative without dialogue.";
+    const titleInstruction = title ? `The story should have the title "${title}".` : "";
+    const characterInstruction = characterNames.length > 0 ? `The story should feature these characters: ${characterNames.join(', ')}.` : "";
 
-    const movementPrompt = CAMERA_MOVEMENT_PROMPTS[cameraMovement] || 'The camera remains static.';
-    const finalPrompt = script ? `${script}. ${movementPrompt}` : movementPrompt;
+    const systemPrompt = `You are a creative storyteller for all ages. Your task is to write a short story based on a user's prompt and then break it down into scenes.
 
-    onProgress("Sending video request to model...");
+**CRITICAL RULES:**
+1.  **Format:** Your output MUST be a valid JSON object.
+2.  **Story Narrative:** Write a compelling, family-friendly narrative.
+3.  **Scenes:** After the narrative, create an array of scenes. Each scene must have:
+    *   \`imageDescription\`: A concise, visual description of the scene for an AI image generator. Focus on what is seen, not what is felt.
+    *   \`narration\`: The corresponding text from the story for that scene, including any dialogue.
+4.  **Safety:** The story and descriptions must be 100% safe-for-work and free of any violence, conflict, or sensitive topics.
+5.  **Cohesion:** The scenes must logically follow the narrative.
+`;
 
-    const videoGenerationPayload: any = {
-        model: videoModel,
-        prompt: finalPrompt,
+    const userPrompt = `
+**User's Idea:** "${prompt}"
+${titleInstruction}
+${characterInstruction}
+${dialogueInstruction}
+`;
+
+    const response = await withRetry(() => ai.models.generateContent({
+        model: 'gemini-3-pro-preview',
+        contents: [{ text: userPrompt }],
         config: {
-            numberOfVideos: 1,
-            resolution: resolution,
-            aspectRatio: aspectRatio as '16:9' | '9:16',
+            systemInstruction: systemPrompt,
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    storyNarrative: {
+                        type: Type.STRING,
+                        description: "The complete, well-written story narrative."
+                    },
+                    scenes: {
+                        type: Type.ARRAY,
+                        description: "An array of scenes that break down the story.",
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                imageDescription: {
+                                    type: Type.STRING,
+                                    description: "A visual prompt for an AI to generate the scene's image."
+                                },
+                                narration: {
+                                    type: Type.STRING,
+                                    description: "The part of the story narrative corresponding to this scene."
+                                }
+                            },
+                            required: ["imageDescription", "narration"]
+                        }
+                    }
+                },
+                required: ["storyNarrative", "scenes"]
+            }
         }
-    };
+    }), undefined, signal);
 
-    if (previousVideoObject) {
-        videoGenerationPayload.video = previousVideoObject;
-    } else if (scene.src) {
-        videoGenerationPayload.image = {
-            imageBytes: scene.src,
-            mimeType: 'image/png'
-        };
-    }
-    
-    // FIX: Add GenerateVideosOperation type to the operation variable to fix property access errors.
-    let operation: GenerateVideosOperation = await withRetry(() => ai.models.generateVideos(videoGenerationPayload), onProgress, signal);
-    onProgress("Video generation in progress... (this may take several minutes)");
-
-    while (!operation.done) {
-        if (signal?.aborted) {
-            throw new Error("Aborted");
+    try {
+        const jsonStr = response.text.trim();
+        const parsed = JSON.parse(jsonStr);
+        if (!parsed.storyNarrative || !parsed.scenes) {
+            throw new Error("AI response was missing required story parts.");
         }
-        await delay(10000); // Poll every 10 seconds
-        try {
-            operation = await ai.operations.getVideosOperation({ operation: operation });
-            const progress = operation.metadata?.progressPercentage || 0;
-            onProgress(`Processing video... ${progress.toFixed(0)}%`);
-        } catch (e) {
-            console.warn("Polling for video status failed, retrying...", e);
+        return parsed as StorybookParts;
+    } catch (e) {
+        console.error("Failed to parse structured story from AI:", response.text, e);
+        throw new Error("The AI returned an invalid format for the story. Please try again.");
+    }
+}
+
+export async function generateScenesFromNarrative(
+    narrative: string,
+    characterNames: string[],
+    wantsDialogue: boolean,
+    signal?: AbortSignal
+): Promise<StoryboardSceneData[]> {
+    const ai = getAiClient();
+
+    const dialogueInstruction = wantsDialogue ? "Pay close attention to lines of dialogue and assign them to the correct scenes." : "Focus only on the narrative action and descriptions.";
+    const characterInstruction = characterNames.length > 0 ? `The key characters in this story are: ${characterNames.join(', ')}. When describing scenes, refer to them by these names.` : "";
+
+    const systemPrompt = `You are a film script analyst. Your job is to read a story narrative and break it down into logical, sequential scenes.
+
+**CRITICAL RULES:**
+1.  **Format:** Your output MUST be a valid JSON array of scene objects.
+2.  **Scene Object:** Each scene object must contain:
+    *   \`imageDescription\`: A concise, visual description of the scene for an AI image generator. Describe the setting, characters, and key action.
+    *   \`narration\`: The exact portion of the original narrative that corresponds to this scene.
+3.  **Completeness:** You must process the entire narrative, ensuring every part is assigned to a scene.
+4.  **Safety:** All image descriptions must be 100% safe-for-work. Avoid any descriptions that could be misinterpreted by safety filters.
+`;
+
+    const userPrompt = `
+**Story to Analyze:**
+---
+${narrative}
+---
+
+**Instructions:**
+Break the story above into scenes. ${characterInstruction} ${dialogueInstruction}
+`;
+    const response = await withRetry(() => ai.models.generateContent({
+        model: 'gemini-3-pro-preview',
+        contents: [{ text: userPrompt }],
+        config: {
+            systemInstruction: systemPrompt,
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: Type.ARRAY,
+                description: "An array of scenes that break down the story.",
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        imageDescription: {
+                            type: Type.STRING,
+                            description: "A visual prompt for an AI to generate the scene's image."
+                        },
+                        narration: {
+                            type: Type.STRING,
+                            description: "The part of the story narrative corresponding to this scene."
+                        }
+                    },
+                    required: ["imageDescription", "narration"]
+                }
+            }
         }
-    }
+    }), undefined, signal);
 
-    onProgress("Finalizing video...");
-    const API_KEY = process.env.API_KEY;
-
-    if (operation.error) {
-        throw new Error(`Video generation failed: ${operation.error.message}`);
+    try {
+        const jsonStr = response.text.trim();
+        const parsed = JSON.parse(jsonStr);
+        if (!Array.isArray(parsed)) {
+            throw new Error("AI response was not a valid array.");
+        }
+        return parsed as StoryboardSceneData[];
+    } catch (e) {
+        console.error("Failed to parse scenes from narrative:", response.text, e);
+        throw new Error("The AI returned an invalid format for the scenes. Please try again.");
     }
-
-    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-    if (!downloadLink) {
-        throw new Error("Video generation succeeded but no video was returned. This may be due to a safety policy violation.");
-    }
-    
-    const videoResponse = await fetch(`${downloadLink}&key=${API_KEY}`);
-    if (!videoResponse.ok) {
-        throw new Error("Failed to download the generated video.");
-    }
-    const videoBlob = await videoResponse.blob();
-    const videoUrl = URL.createObjectURL(videoBlob);
-
-    let audioUrl: string | null = null;
-    if (audioBase64) {
-        const audioBytes = base64ToBytes(audioBase64);
-        const audioBlob = pcmToWavBlob(audioBytes);
-        audioUrl = URL.createObjectURL(audioBlob);
-    }
-    
-    return {
-        videoUrl,
-        audioUrl,
-        videoObject: operation.response?.generatedVideos?.[0]?.video,
-        audioBase64
-    };
 }
 
 export async function generateStorybookSpeech(
-    script: string,
+    text: string,
     voice: string,
     expression: string,
     accent?: string,
     signal?: AbortSignal
 ): Promise<string | null> {
     const ai = getAiClient();
-    if (!script) return null;
+    if (!text) return null;
 
-    const ttsPrompt = `(${expression}): ${script}`;
-    const systemInstruction = accent ? `You are a voice actor. Speak in a ${accent} accent.` : 'You are a voice actor.';
+    // Use expression and accent in the prompt for TTS
+    const accentInstruction = (accent && accent !== 'Global (Neutral)') ? ` The accent should be ${accent}.` : '';
+    const ttsPrompt = `(${expression}${accentInstruction}): ${text}`;
 
     try {
-        const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+        const ttsResponse = await withRetry(() => ai.models.generateContent({
             model: "gemini-2.5-flash-preview-tts",
             contents: [{ parts: [{ text: ttsPrompt }] }],
             config: {
-                systemInstruction,
                 responseModalities: [Modality.AUDIO],
                 speechConfig: {
                     voiceConfig: {
@@ -1144,174 +1191,219 @@ export async function generateStorybookSpeech(
             },
         }), undefined, signal);
 
-        const audioPart = response.candidates?.[0]?.content?.parts?.[0];
+        const audioPart = ttsResponse.candidates?.[0]?.content?.parts?.[0];
         if (audioPart && audioPart.inlineData) {
             return audioPart.inlineData.data;
         }
+
         return null;
     } catch (error) {
-        console.error("Error generating speech:", error);
+        console.error("Error generating storybook speech:", error);
         throw error;
     }
 }
 
-export async function generateStructuredStory(
-    userPrompt: string,
-    title: string,
-    characters: string[],
-    wantsDialogue: boolean,
+export async function generateVideoFromScene(
+    scene: StoryboardScene,
+    aspectRatio: string,
+    scriptPrompt: string,
+    characters: Character[],
+    audioOptions: AudioOptions | null,
+    imageStyle: string,
+    videoModel: string,
+    resolution: '720p' | '1080p',
+    cameraMovement: string,
+    onProgress: (message: string) => void,
+    previousVideoObject: any, // To extend from a previous clip
     signal?: AbortSignal
-): Promise<StorybookParts> {
+): Promise<{ videoUrl: string | null; audioUrl: string | null; videoObject: any; audioBase64: string | null; }> {
     const ai = getAiClient();
-
-    const dialogueInstruction = wantsDialogue
-        ? "The story and scene narrations MUST include rich dialogue between characters."
-        : "The story should be told from a third-person narrative perspective. Do not include direct dialogue quotes.";
-
-    const characterInstruction = characters.length > 0
-        ? `Incorporate the following characters into the story: ${characters.join(', ')}.`
-        : '';
-    
-    const movementInstruction = `**CRITICAL RULE FOR NARRATION:** The 'narration' field should contain the portion of the story corresponding to the scene. It should be written as pure narrative, not a script. Do NOT include camera directions (e.g., 'pan left', 'zoom in'). The 'imageDescription' field should be a purely visual, static description of that moment.`;
-
-
-    const prompt = `You are a creative writer tasked with generating a short story and breaking it down into a storyboard format.
-
-**User's Story Idea:** "${userPrompt}"
-**Title (if any):** "${title}"
-
-**Instructions:**
-1.  Write a complete, coherent story narrative based on the user's idea. The narrative should be engaging and well-structured, written as a pure story without any camera directions or cinematic terms.
-2.  After writing the full narrative, break it down into a sequence of logical scenes. Think like a film director: each scene should represent a distinct moment or a continuous action in a single location. The scene breaks must create a clear and understandable flow for the visual story. A good scene can often be captured in a single, powerful image.
-3.  For each scene, provide two components:
-    *   **imageDescription:** A concise, purely visual description of the scene for an image generator. Describe the setting, characters, and their actions as a static snapshot.
-    *   **narration:** The portion of the story narrative that corresponds to this visual scene.
-4.  ${characterInstruction}
-5.  ${dialogueInstruction}
-6.  ${movementInstruction}
-7.  **Cultural Context:** For consistency, please ensure all human characters in the story and scene descriptions are of Black African descent.
-
-**Output Format:**
-Return a valid JSON object with two keys:
-1.  "storyNarrative": A string containing the full story.
-2.  "scenes": An array of objects, where each object has "imageDescription" and "narration" string properties.
-`;
-
-    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-        model: 'gemini-3-pro-preview',
-        contents: { parts: [{ text: prompt }] },
-        config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                    storyNarrative: { type: Type.STRING },
-                    scenes: {
-                        type: Type.ARRAY,
-                        items: {
-                            type: Type.OBJECT,
-                            properties: {
-                                imageDescription: { type: Type.STRING },
-                                narration: { type: Type.STRING }
-                            },
-                            required: ['imageDescription', 'narration']
-                        }
-                    }
-                },
-                required: ['storyNarrative', 'scenes']
-            }
-        }
-    }), undefined, signal);
-
-    try {
-        const jsonStr = response.text.trim();
-        const parsed = JSON.parse(jsonStr);
-        if (!parsed.storyNarrative || !parsed.scenes || !Array.isArray(parsed.scenes)) {
-            throw new Error("AI failed to return a valid structured story.");
-        }
-        // Add a random ID to each scene, as App.tsx expects it for keys
-        parsed.scenes = parsed.scenes.map((scene: any) => ({ ...scene, id: Date.now() + Math.random() }));
-        return parsed;
-    } catch (e) {
-        console.error("Failed to parse structured story JSON:", response.text, e);
-        throw new Error("The AI returned an invalid format for the story.");
+    if (!scene.src) {
+        return { videoUrl: null, audioUrl: null, videoObject: null, audioBase64: null };
     }
+
+    onProgress("Generating audio track...");
+    let audioBase64: string | null = null;
+    if (audioOptions) {
+        if (audioOptions.mode === 'tts') {
+            audioBase64 = await generateSpeech(audioOptions.data, characters, imageStyle, signal);
+        } else {
+            audioBase64 = audioOptions.data;
+        }
+    }
+    const audioUrl = audioBase64 ? URL.createObjectURL(pcmToWavBlob(base64ToBytes(audioBase64))) : null;
+
+    onProgress("Preparing video generation...");
+    
+    // Combine script and camera movement into the prompt
+    let finalVideoPrompt = scriptPrompt || scene.prompt;
+    const movementPrompt = CAMERA_MOVEMENT_PROMPTS[cameraMovement] || '';
+    if (movementPrompt) {
+        finalVideoPrompt = `${movementPrompt}\n\nScene: ${finalVideoPrompt}`;
+    }
+
+    const videoGenerationPayload: any = {
+        model: videoModel,
+        prompt: finalVideoPrompt,
+        config: {
+            numberOfVideos: 1,
+            resolution: resolution,
+            aspectRatio: aspectRatio as '16:9' | '9:16',
+        }
+    };
+
+    if (previousVideoObject) {
+        videoGenerationPayload.video = previousVideoObject;
+    } else {
+        videoGenerationPayload.image = {
+            imageBytes: scene.src,
+            mimeType: 'image/png',
+        };
+    }
+    
+    let operation: GenerateVideosOperation = await withRetry(() => ai.models.generateVideos(videoGenerationPayload), onProgress, signal);
+
+    onProgress("Video generation started. This may take several minutes...");
+
+    const pollInterval = 10000; // 10 seconds
+    const maxWaitTime = 5 * 60 * 1000; // 5 minutes
+    let elapsedTime = 0;
+
+    while (!operation.done && elapsedTime < maxWaitTime) {
+        if (signal?.aborted) throw new Error("Aborted");
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        elapsedTime += pollInterval;
+        try {
+            operation = await ai.operations.getVideosOperation({ operation: operation });
+            const progress = operation.metadata?.progressPercentage || 0;
+            onProgress(`Processing video... ${Math.round(progress)}%`);
+        } catch (opError) {
+             // Handle cases where the operation itself errors out during polling
+             console.error("Error polling video operation:", opError);
+             throw new Error(`Video operation failed during processing: ${parseErrorMessage(opError)}`);
+        }
+    }
+
+    if (!operation.done) {
+        throw new Error("Video generation timed out after 5 minutes.");
+    }
+
+    if (operation.error) {
+        throw new Error(`Video generation failed with an error: ${operation.error.message}`);
+    }
+
+    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+    if (!downloadLink) {
+        throw new Error("Generation succeeded but no video was returned. This may be a safety block.");
+    }
+    
+    onProgress("Downloading video...");
+    const API_KEY = process.env.API_KEY;
+    const response = await fetch(`${downloadLink}&key=${API_KEY}`);
+    if (!response.ok) {
+        throw new Error(`Failed to download video file. Status: ${response.statusText}`);
+    }
+    const videoBlob = await response.blob();
+    const videoUrl = URL.createObjectURL(videoBlob);
+
+    return { videoUrl, audioUrl, videoObject: operation.response?.generatedVideos?.[0]?.video, audioBase64 };
 }
 
-export async function generateScenesFromNarrative(
-    storyNarrative: string,
-    characters: string[],
-    wantsDialogue: boolean,
+export async function generateVideoFromImages(
+    animationMode: 'start' | 'startEnd' | 'reference',
+    images: ({ base64: string; mimeType: string } | null)[],
+    prompt: string,
+    videoModel: string,
+    aspectRatio: string,
+    resolution: '720p' | '1080p',
+    onProgress: (message: string) => void,
     signal?: AbortSignal
-): Promise<Array<{ id: number; imageDescription: string; narration: string }>> {
+): Promise<{ videoUrl: string | null; videoObject: any; }> {
     const ai = getAiClient();
-
-    const dialogueInstruction = wantsDialogue
-        ? "The narration for each scene MUST include dialogue if it is present in the original narrative."
-        : "The narration for each scene should be purely descriptive, summarizing the action. Do NOT include direct dialogue quotes.";
-
-    const characterInstruction = characters.length > 0
-        ? `The story features these characters: ${characters.join(', ')}. Ensure they are central to the scenes.`
-        : '';
-
-    const movementInstruction = `**CRITICAL RULE FOR NARRATION vs. VISUALS:** The 'narration' field should be the exact text from the story that corresponds to the scene. The 'imageDescription' should be a purely visual, static description of that moment. Do not add camera directions (e.g., 'pan left', 'zoom in') to either field. Just describe what is happening.`;
-
-
-    const prompt = `You are a storyboard artist's assistant. Your task is to analyze a story narrative and break it down into a sequence of distinct, visually representable scenes.
-
-**Story Narrative:**
-"${storyNarrative}"
-
-**Instructions:**
-1.  Read the entire narrative to understand the plot, characters, and pacing.
-2.  Divide the narrative into logical scenes. Think like a film director: each scene should represent a single, static moment or a continuous action in one location. Ensure the scene breaks create a clear and understandable flow for the visual story. A good scene can be captured in a single, powerful image.
-3.  For each scene, generate two components:
-    *   **imageDescription:** A concise, purely visual description of the scene. This will be used to generate an image. It should describe the setting, characters' appearances, their positions, and key objects. It must be a static snapshot.
-    *   **narration:** The corresponding text from the story for that scene. This will be used as a script for voice-over.
-4.  ${dialogueInstruction}
-5.  ${characterInstruction}
-6.  ${movementInstruction}
-
-**Output Format:**
-Return a valid JSON object with a single key "scenes", which is an array of objects. Each object in the array must have two string keys: "imageDescription" and "narration".
-`;
-
-    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-        model: 'gemini-3-pro-preview',
-        contents: { parts: [{ text: prompt }] },
+    const videoGenerationPayload: any = {
+        model: videoModel,
+        prompt: prompt,
         config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                    scenes: {
-                        type: Type.ARRAY,
-                        items: {
-                            type: Type.OBJECT,
-                            properties: {
-                                imageDescription: { type: Type.STRING },
-                                narration: { type: Type.STRING }
-                            },
-                            required: ['imageDescription', 'narration']
-                        }
-                    }
-                },
-                required: ['scenes']
-            }
+            numberOfVideos: 1,
+            resolution: resolution,
+            aspectRatio: aspectRatio as '16:9' | '9:16',
         }
-    }), undefined, signal);
+    };
 
-    try {
-        const jsonStr = response.text.trim();
-        const parsed = JSON.parse(jsonStr);
-        if (!parsed.scenes || !Array.isArray(parsed.scenes)) {
-            throw new Error("AI failed to return a valid array of scenes.");
-        }
-         // Add a random ID to each scene, as App.tsx expects it for keys
-        parsed.scenes = parsed.scenes.map((scene: any) => ({ ...scene, id: Date.now() + Math.random() }));
-        return parsed.scenes;
-    } catch (e) {
-        console.error("Failed to parse scenes from narrative JSON:", response.text, e);
-        throw new Error("The AI returned an invalid format for scene breakdown.");
+    switch (animationMode) {
+        case 'start':
+            if (!images[0]) throw new Error("A starting image is required for this animation mode.");
+            videoGenerationPayload.image = { imageBytes: images[0].base64, mimeType: images[0].mimeType };
+            break;
+        case 'startEnd':
+            if (!images[0] || !images[1]) throw new Error("Both a start and end image are required for this animation mode.");
+            videoGenerationPayload.image = { imageBytes: images[0].base64, mimeType: images[0].mimeType };
+            videoGenerationPayload.config.lastFrame = { imageBytes: images[1].base64, mimeType: images[1].mimeType };
+            break;
+        case 'reference':
+            const referenceImages = images.filter(img => img !== null) as { base64: string; mimeType: string }[];
+            if (referenceImages.length === 0) throw new Error("At least one reference image is required for this mode.");
+            
+            // Special constraints for multi-reference
+            const referenceImagesPayload: VideoGenerationReferenceImage[] = referenceImages.map(img => ({
+                image: { imageBytes: img.base64, mimeType: img.mimeType },
+                referenceType: VideoGenerationReferenceType.ASSET
+            }));
+            videoGenerationPayload.config.referenceImages = referenceImagesPayload;
+            // Overwrite config for multi-ref constraints
+            videoGenerationPayload.model = 'veo-3.1-generate-preview';
+            videoGenerationPayload.config.resolution = '720p';
+            videoGenerationPayload.config.aspectRatio = '16:9';
+            if (!prompt) {
+                throw new Error("A text prompt is required for animation with reference images.");
+            }
+            break;
     }
+
+    onProgress("Preparing video generation...");
+    let operation: GenerateVideosOperation = await withRetry(() => ai.models.generateVideos(videoGenerationPayload), onProgress, signal);
+
+    onProgress("Video generation started. This may take a few minutes...");
+    const pollInterval = 10000;
+    const maxWaitTime = 5 * 60 * 1000;
+    let elapsedTime = 0;
+
+    while (!operation.done && elapsedTime < maxWaitTime) {
+        if (signal?.aborted) throw new Error("Aborted");
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        elapsedTime += pollInterval;
+
+        try {
+            operation = await ai.operations.getVideosOperation({ operation: operation });
+            const progress = operation.metadata?.progressPercentage || 0;
+            onProgress(`Processing video... ${Math.round(progress)}%`);
+        } catch (opError) {
+             console.error("Error polling video operation:", opError);
+             throw new Error(`Video operation failed during processing: ${parseErrorMessage(opError)}`);
+        }
+    }
+
+    if (!operation.done) {
+        throw new Error("Video generation timed out.");
+    }
+    
+    if (operation.error) {
+        throw new Error(`Video generation failed: ${operation.error.message}`);
+    }
+
+    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+    if (!downloadLink) {
+        throw new Error("Generation succeeded but no video was returned. This might be a safety block.");
+    }
+    
+    onProgress("Downloading video...");
+    const API_KEY = process.env.API_KEY;
+    const response = await fetch(`${downloadLink}&key=${API_KEY}`);
+    if (!response.ok) {
+        throw new Error(`Failed to download video. Status: ${response.statusText}`);
+    }
+    const videoBlob = await response.blob();
+    const videoUrl = URL.createObjectURL(videoBlob);
+
+    return { videoUrl, videoObject: operation.response?.generatedVideos?.[0]?.video };
 }
