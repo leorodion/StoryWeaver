@@ -367,7 +367,7 @@ ${characterDetails}
 **Implicit Characters:** If the user's "Core Idea" mentions other character names not listed above, you should also include them in the story. Generate a consistent appearance for them.`;
     }
 
-    const racialInstruction = `**RACIAL MANDATE:** ALL human characters in the story and scene descriptions MUST be of Black African descent. Ensure the setting, cultural elements, and descriptions reflect this.`;
+    const racialInstruction = `For cultural context and consistency, please ensure all human characters in the story and scene descriptions are of Black African descent.`;
 
     const prompt = `You are a creative assistant generating prompts for an image AI. Your primary goal is to create safe, clear, and visually descriptive scenes.
 
@@ -520,8 +520,8 @@ ${referenceDescription}
             : '';
         
         const racialMandate = `---
-**RACIAL MANDATE (CRITICAL & ABSOLUTE REQUIREMENT):**
-ALL human characters depicted in the image MUST be of Black African descent. This is a non-negotiable instruction. If the prompt, scene description, or character descriptions ask for or describe a non-Black person, you MUST ignore that specific racial trait and render them as a Black person, while keeping all other characteristics (like clothing, pose, expression) the same.
+**Cultural Context:**
+For consistency with the story's setting, please ensure that all human characters depicted are of Black African descent.
 ---
 `;
         
@@ -887,8 +887,8 @@ export async function editImage(params: EditImageParams): Promise<{ src: string 
         }
 
         const racialMandate = `---
-**RACIAL MANDATE (CRITICAL & ABSOLUTE REQUIREMENT):**
-ALL human characters depicted in the image MUST be of Black African descent.
+**Cultural Context:**
+For consistency, please ensure that any human characters depicted are of Black African descent.
 ---
 `;
         
@@ -1172,7 +1172,7 @@ export async function generateStructuredStory(
         ? `Incorporate the following characters into the story: ${characters.join(', ')}.`
         : '';
     
-    const movementInstruction = `**CRITICAL RULE FOR MOVEMENT:** Any camera movements (like 'pan left', 'zoom in', 'dolly out') MUST be described in the 'narration' field, NOT the 'imageDescription' field. The 'imageDescription' must ONLY contain static visual elements.`;
+    const movementInstruction = `**CRITICAL RULE FOR NARRATION:** The 'narration' field should contain the portion of the story corresponding to the scene. It should be written as pure narrative, not a script. Do NOT include camera directions (e.g., 'pan left', 'zoom in'). The 'imageDescription' field should be a purely visual, static description of that moment.`;
 
 
     const prompt = `You are a creative writer tasked with generating a short story and breaking it down into a storyboard format.
@@ -1181,7 +1181,7 @@ export async function generateStructuredStory(
 **Title (if any):** "${title}"
 
 **Instructions:**
-1.  Write a complete, coherent story narrative based on the user's idea. The narrative should be engaging and well-structured.
+1.  Write a complete, coherent story narrative based on the user's idea. The narrative should be engaging and well-structured, written as a pure story without any camera directions or cinematic terms.
 2.  After writing the full narrative, break it down into a sequence of logical scenes. Think like a film director: each scene should represent a distinct moment or a continuous action in a single location. The scene breaks must create a clear and understandable flow for the visual story. A good scene can often be captured in a single, powerful image.
 3.  For each scene, provide two components:
     *   **imageDescription:** A concise, purely visual description of the scene for an image generator. Describe the setting, characters, and their actions as a static snapshot.
@@ -1189,7 +1189,7 @@ export async function generateStructuredStory(
 4.  ${characterInstruction}
 5.  ${dialogueInstruction}
 6.  ${movementInstruction}
-7.  **RACIAL MANDATE:** ALL human characters in the story and scene descriptions MUST be of Black African descent.
+7.  **Cultural Context:** For consistency, please ensure all human characters in the story and scene descriptions are of Black African descent.
 
 **Output Format:**
 Return a valid JSON object with two keys:
@@ -1254,7 +1254,7 @@ export async function generateScenesFromNarrative(
         ? `The story features these characters: ${characters.join(', ')}. Ensure they are central to the scenes.`
         : '';
 
-    const movementInstruction = `**CRITICAL RULE FOR MOVEMENT:** Any camera movements (like 'pan left', 'zoom in', 'dolly out') MUST be described in the 'narration' field, NOT the 'imageDescription' field. The 'imageDescription' must ONLY contain static visual elements. For example, if the scene is 'The camera pans across a bustling market', the imageDescription would be 'A bustling market scene' and the narration would be 'The camera pans across the market, revealing...'`;
+    const movementInstruction = `**CRITICAL RULE FOR NARRATION vs. VISUALS:** The 'narration' field should be the exact text from the story that corresponds to the scene. The 'imageDescription' should be a purely visual, static description of that moment. Do not add camera directions (e.g., 'pan left', 'zoom in') to either field. Just describe what is happening.`;
 
 
     const prompt = `You are a storyboard artist's assistant. Your task is to analyze a story narrative and break it down into a sequence of distinct, visually representable scenes.

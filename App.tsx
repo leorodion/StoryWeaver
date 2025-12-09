@@ -4,7 +4,7 @@ import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { generateImageSet, generateVideoFromScene, StoryboardScene, generatePromptFromAudio, generateCharacterDescription, AudioOptions, generateSingleImage, Character, generateCameraAnglesFromImage, editImage, EditImageParams, CAMERA_MOVEMENT_PROMPTS, generateStructuredStory, Storybook, generateScenesFromNarrative, generateStorybookSpeech, PREBUILT_VOICES, VOICE_EXPRESSIONS, StorybookParts, ACCENT_OPTIONS, CAMERA_ANGLE_OPTIONS, generateCharacterVisual, describeImageForConsistency } from './services/geminiService';
 import { fileToBase64, base64ToBytes, compressImageBase64, pcmToWavBlob } from './utils/fileUtils';
 import { parseErrorMessage } from './utils/errorUtils';
-import { SparklesIcon, LoaderIcon, DownloadIcon, VideoIcon, PlusCircleIcon, ChevronLeftIcon, ChevronRightIcon, UserPlusIcon, XCircleIcon, RefreshIcon, TrashIcon, XIcon, BookmarkIcon, HistoryIcon, UploadIcon, CameraIcon, UndoIcon, MusicalNoteIcon, BookOpenIcon, ClipboardIcon, CheckIcon, DocumentMagnifyingGlassIcon, SpeakerWaveIcon, ChevronDownIcon, LockClosedIcon, LockOpenIcon, ClapperboardIcon, SaveIcon, StopIcon, ChartBarIcon, RedoIcon } from './components/Icons';
+import { SparklesIcon, LoaderIcon, DownloadIcon, VideoIcon, PlusCircleIcon, ChevronLeftIcon, ChevronRightIcon, UserPlusIcon, XCircleIcon, RefreshIcon, TrashIcon, XIcon, BookmarkIcon, HistoryIcon, UploadIcon, CameraIcon, UndoIcon, MusicalNoteIcon, BookOpenIcon, ClipboardIcon, CheckIcon, DocumentMagnifyingGlassIcon, SpeakerWaveIcon, ChevronDownIcon, LockClosedIcon, LockOpenIcon, ClapperboardIcon, SaveIcon, StopIcon, CreditCardIcon, ExclamationTriangleIcon, RedoIcon } from './components/Icons';
 
 type AppStatus = {
   status: 'idle' | 'loading' | 'error';
@@ -66,6 +66,11 @@ type DailyCounts = {
     lastReset: string; // e.g., "Mon Sep 23 2024"
 };
 
+type CreditSettings = {
+    creditBalance: number; // Always in USD
+    currency: 'USD' | 'SEK';
+};
+
 type VideoClip = {
   videoUrl: string | null;
   audioUrl: string | null;
@@ -94,6 +99,21 @@ type ConfirmationModalState = {
     message: string;
     onConfirm: () => void;
     onCancel: () => void;
+};
+
+// COST ESTIMATION CONSTANTS (based on public pricing, may become outdated)
+const COST_MAP: { [key: string]: number } = {
+    'gemini-2.5-flash-image': 0.0025,
+    'gemini-3-pro-image-preview': 0.005,
+    'imagen-4.0-generate-001': 0.02,
+    'veo-2-fast-generate-preview': 0.10, // estimate per clip
+    'veo-3.1-fast-generate-preview': 0.12, // estimate per clip
+    'veo-3.1-generate-preview': 0.25, // estimate per clip
+};
+
+const CURRENCY_INFO = {
+    USD: { symbol: '$', rate: 1 },
+    SEK: { symbol: 'kr', rate: 10.5 }
 };
 
 // Use AI Studio's synchronized storage if available, with a fallback to local storage.
@@ -188,6 +208,36 @@ const loadDailyCounts = async (): Promise<DailyCounts | null> => {
     }
 };
 
+const saveCreditSettings = async (settings: CreditSettings) => {
+    try {
+        const data = JSON.stringify(settings);
+        const storage = (window as any).aistudio?.storage;
+        if (storage && typeof storage.setItem === 'function') {
+            await storage.setItem('creativeSuiteCreditSettings', data);
+        } else {
+            localStorage.setItem('creativeSuiteCreditSettings', data);
+        }
+    } catch (error) {
+      console.error('Failed to save credit settings:', error);
+    }
+};
+
+const loadCreditSettings = async (): Promise<CreditSettings | null> => {
+    try {
+        const storage = (window as any).aistudio?.storage;
+        let data;
+        if (storage && typeof storage.getItem === 'function') {
+            data = await storage.getItem('creativeSuiteCreditSettings');
+        } else {
+            data = localStorage.getItem('creativeSuiteCreditSettings');
+        }
+        return data ? JSON.parse(data) : null;
+    } catch (error) {
+        console.error('Failed to load credit settings:', error);
+        return null;
+    }
+};
+
 function escapeRegExp(string: string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -203,14 +253,14 @@ const App: React.FC = () => {
     const storybookScenesContainerRef = useRef<HTMLDivElement>(null);
     const storybookEndRef = useRef<HTMLDivElement>(null);
     const overlayImageInputRef = useRef<HTMLInputElement>(null);
+    const creditAdderRef = useRef<HTMLDivElement>(null);
 
     const [prompt, setPrompt] = useState<string>('');
     const [imageCount, setImageCount] = useState<number>(1);
     const [aspectRatio, setAspectRatio] = useState<string>('16:9');
     const [imageStyle, setImageStyle] = useState<string>('Afro-toon');
     const [imageModel, setImageModel] = useState<string>('gemini-2.5-flash-image');
-    // FIX: Updated default video model to a current, valid model as per guidelines.
-    const [videoModel, setVideoModel] = useState<string>('veo-3.1-fast-generate-preview');
+    const [videoModel, setVideoModel] = useState<string>('veo-2-fast-generate-preview');
     const [genre, setGenre] = useState<string>('General');
     const [appStatus, setAppStatus] = useState<AppStatus>({ status: 'idle', error: null });
     const [statusMessage, setStatusMessage] = useState<string>('');
@@ -269,9 +319,11 @@ const App: React.FC = () => {
     const [isProcessingAudio, setIsProcessingAudio] = useState(false);
     const [dailyCounts, setDailyCounts] = useState<DailyCounts>({ images: 0, videos: 0, lastReset: new Date().toDateString() });
 
-    const prevCharactersRef = useRef<Character[]>(characters);
+    const [creditSettings, setCreditSettings] = useState<CreditSettings>({ creditBalance: 0, currency: 'USD' });
+    const [creditToAdd, setCreditToAdd] = useState<number>(50);
+    const [isCreditAdderOpen, setIsCreditAdderOpen] = useState(false);
 
-    const [hasConfirmedApiKey, setHasConfirmedApiKey] = useState(false);
+    const prevCharactersRef = useRef<Character[]>(characters);
     
     const [isAngleModalOpen, setIsAngleModalOpen] = useState(false);
     const [angleSelectionTarget, setAngleSelectionTarget] = useState<{ generationId: number; sceneIndex: number } | null>(null);
@@ -296,33 +348,12 @@ const App: React.FC = () => {
         onCancel: () => {},
     });
 
-    const checkApiKey = useCallback(async () => {
-        if ((window as any).aistudio && (window as any).aistudio.hasSelectedApiKey) {
-            const hasKey = await (window as any).aistudio.hasSelectedApiKey();
-            setHasConfirmedApiKey(hasKey);
-        } else {
-            // If the aistudio context doesn't exist, assume we're in an environment
-            // where a key is provided directly, and allow the app to run.
-            setHasConfirmedApiKey(true);
-        }
-    }, []);
-
-    useEffect(() => {
-        checkApiKey();
-    }, [checkApiKey]);
-
-    const handleSelectKey = async () => {
-        if ((window as any).aistudio && (window as any).aistudio.openSelectKey) {
-            await (window as any).aistudio.openSelectKey();
-            // Optimistically assume a key was selected to avoid race conditions.
-            setHasConfirmedApiKey(true);
-        }
-    };
+    const isGenerationDisabled = creditSettings.creditBalance <= 0;
     
     const handleApiKeyError = (error: unknown) => {
         const parsedError = parseErrorMessage(error);
         if (parsedError.includes("API Key error") || parsedError.includes("entity was not found") || parsedError.includes("Invalid API Key")) {
-            setHasConfirmedApiKey(false);
+            setAppStatus({ status: 'error', error: parsedError });
             return true;
         }
         return false;
@@ -349,6 +380,19 @@ const App: React.FC = () => {
             }
         };
         initializeCounts();
+
+        const initializeCredit = async () => {
+            const loadedCredit = await loadCreditSettings();
+            if (loadedCredit) {
+                setCreditSettings(loadedCredit);
+            } else {
+                const defaultSettings: CreditSettings = { creditBalance: 0, currency: 'USD' };
+                setCreditSettings(defaultSettings);
+                await saveCreditSettings(defaultSettings);
+            }
+        };
+        initializeCredit();
+
 
         // Load characters from local storage
         try {
@@ -430,6 +474,20 @@ const App: React.FC = () => {
             }
         }
     }, []);
+
+    // Click outside handler for credit pop-up
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (creditAdderRef.current && !creditAdderRef.current.contains(event.target as Node)) {
+                setIsCreditAdderOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+        };
+    }, []);
+
 
     // Save characters to local storage whenever they change
     useEffect(() => {
@@ -711,6 +769,7 @@ const App: React.FC = () => {
     }, [activeHistoryIndex, generationHistory]);
 
     const incrementCount = useCallback(async (type: 'images' | 'videos', amount = 1) => {
+        // Daily usage counts
         setDailyCounts(currentCounts => {
             const today = new Date().toDateString();
             let updatedCounts: DailyCounts;
@@ -727,11 +786,57 @@ const App: React.FC = () => {
                     [type]: currentCounts[type] + amount,
                 };
             }
-
             saveDailyCounts(updatedCounts);
             return updatedCounts;
         });
-    }, []);
+
+        // Deduct from credit balance
+        setCreditSettings(current => {
+            const modelKey = type === 'images' ? imageModel : videoModel;
+            const costPerUnit = COST_MAP[modelKey] || (type === 'images' ? 0.0025 : 0.10);
+            const costToDeduct = amount * costPerUnit; // Cost is always in USD
+            const newBalance = current.creditBalance - costToDeduct;
+
+            const updatedSettings: CreditSettings = {
+                ...current,
+                creditBalance: newBalance,
+            };
+            saveCreditSettings(updatedSettings);
+            return updatedSettings;
+        });
+    }, [imageModel, videoModel]);
+    
+    const handleAddCredit = () => {
+        setCreditSettings(current => {
+            const creditInUSD = creditToAdd / CURRENCY_INFO[current.currency].rate;
+            const newBalance = current.creditBalance + creditInUSD;
+            const updatedSettings = { ...current, creditBalance: newBalance };
+            saveCreditSettings(updatedSettings);
+            return updatedSettings;
+        });
+        setCreditToAdd(50); // Reset input field to default
+        setIsCreditAdderOpen(false); // Close pop-up after adding
+    };
+
+    const handleResetCredit = () => {
+        setConfirmationModal({
+            isOpen: true,
+            title: 'Reset Credit Balance',
+            message: 'Are you sure you want to reset your tracked credit balance to zero? This action cannot be undone.',
+            onConfirm: () => {
+                setCreditSettings(current => {
+                    const updatedSettings = { ...current, creditBalance: 0 };
+                    saveCreditSettings(updatedSettings);
+                    return updatedSettings;
+                });
+                setConfirmationModal({ ...confirmationModal, isOpen: false });
+                setIsCreditAdderOpen(false); // Also close the adder pop-up
+            },
+            onCancel: () => {
+                setConfirmationModal({ ...confirmationModal, isOpen: false });
+            },
+        });
+    };
 
     const handleAskAiForStory = async () => {
         if (!storybookAiPrompt.trim() || isStorybookLoading) return;
@@ -763,7 +868,10 @@ const App: React.FC = () => {
             }));
             setIsAiStoryHelpMode(false);
         } catch (error) {
-            if (handleApiKeyError(error)) return;
+            if (handleApiKeyError(error)) {
+                setIsStorybookLoading(false);
+                return;
+            }
             const parsedError = parseErrorMessage(error);
             if (parsedError === 'Aborted') {
                 setAppStatus({ status: 'error', error: "Generation stopped. This could be due to cancellation or a mobile network interruption." });
@@ -821,7 +929,10 @@ const App: React.FC = () => {
                 scenes: scenesWithDefaults
             }));
         } catch (error) {
-            if (handleApiKeyError(error)) return;
+            if (handleApiKeyError(error)) {
+                setIsStorybookAnalyzing(false);
+                return;
+            }
             const parsedError = parseErrorMessage(error);
             if (parsedError === 'Aborted') {
                 setAppStatus({ status: 'error', error: "Generation stopped. This could be due to cancellation or a mobile network interruption." });
@@ -963,7 +1074,11 @@ const App: React.FC = () => {
                 setStatusMessage('');
         
             } catch (error) {
-                if (handleApiKeyError(error)) return;
+                if (handleApiKeyError(error)) {
+                    setAppStatus({ status: 'idle', error: null });
+                    setStatusMessage('');
+                    return;
+                }
                 const parsedError = parseErrorMessage(error);
                 if (parsedError === 'Aborted') {
                     setAppStatus({ status: 'error', error: "Generation stopped by user." });
@@ -1066,7 +1181,11 @@ const App: React.FC = () => {
             setAppStatus({ status: 'idle', error: null });
             setStatusMessage('');
         } catch (error) {
-            if (handleApiKeyError(error)) return;
+            if (handleApiKeyError(error)) {
+                setAppStatus({ status: 'idle', error: null });
+                setStatusMessage('');
+                return;
+            }
             const parsedError = parseErrorMessage(error);
             setAppStatus({ status: 'error', error: parsedError });
             setGenerationHistory(prev => prev.map(item => {
@@ -1185,7 +1304,10 @@ const App: React.FC = () => {
                  throw new Error("The model did not return any audio data.");
             }
         } catch (error) {
-            if (handleApiKeyError(error)) return;
+            if (handleApiKeyError(error)) {
+                 setStorybookContent(prev => ({ ...prev, isGeneratingNarrativeAudio: false }));
+                 return;
+            }
             const parsedError = parseErrorMessage(error);
             if (parsedError === 'Aborted') {
                 setAppStatus({ status: 'error', error: "Generation stopped. This could be due to cancellation or a mobile network interruption." });
@@ -1233,7 +1355,13 @@ const App: React.FC = () => {
                  throw new Error("The model did not return any audio data.");
             }
         } catch (error) {
-            if (handleApiKeyError(error)) return;
+            if (handleApiKeyError(error)) {
+                 setStorybookContent(prev => ({
+                    ...prev,
+                    scenes: prev.scenes.map(s => s.id === id ? { ...s, isGeneratingAudio: false } : s)
+                }));
+                return;
+            }
             setAppStatus({ status: 'error', error: `Failed to generate audio: ${parseErrorMessage(error)}` });
         } finally {
             setStorybookContent(prev => ({
@@ -1513,7 +1641,11 @@ const App: React.FC = () => {
             setStatusMessage('');
 
         } catch (error) {
-            if (handleApiKeyError(error)) return;
+            if (handleApiKeyError(error)) {
+                 setAppStatus({ status: 'idle', error: null });
+                 setStatusMessage('');
+                 return;
+            }
             const parsedError = parseErrorMessage(error);
             if (parsedError === 'Aborted') {
                 const abortMessage = "Generation stopped. This could be due to cancellation or a mobile network interruption.";
@@ -1597,7 +1729,21 @@ const App: React.FC = () => {
                 )
             );
         } catch (error) {
-            if (handleApiKeyError(error)) return;
+            if (handleApiKeyError(error)) {
+                setGenerationHistory(prev =>
+                    prev.map(item =>
+                        item.id === generationId
+                            ? {
+                                ...item,
+                                imageSet: item.imageSet.map((scene, index) =>
+                                    index === sceneIndex ? { ...scene, isRegenerating: false } : scene
+                                ),
+                            }
+                            : item
+                    )
+                );
+                return;
+            }
             const parsedError = parseErrorMessage(error);
             if (parsedError === 'Aborted') {
                 setAppStatus({ status: 'error', error: "Generation stopped. This could be due to cancellation or a mobile network interruption." });
@@ -1981,7 +2127,18 @@ const App: React.FC = () => {
                 return item;
             }));
         } catch (error) {
-            if (handleApiKeyError(error)) return;
+            if (handleApiKeyError(error)) {
+                setGenerationHistory(prev => prev.map(item => {
+                    if (item.id === generationId) {
+                        return {
+                            ...item,
+                            imageSet: item.imageSet.map((s, i) => i === sceneIndex ? { ...s, isGeneratingAngles: false } : s)
+                        };
+                    }
+                    return item;
+                }));
+                return;
+            }
             const parsedError = parseErrorMessage(error);
             if (parsedError === 'Aborted') {
                 setAppStatus({ status: 'error', error: "Generation stopped. This could be due to cancellation or a mobile network interruption." });
@@ -2398,7 +2555,10 @@ const App: React.FC = () => {
                 setAudioAssignments(prev => [...prev, newAssignment]);
             }
         } catch (err) {
-             if (handleApiKeyError(err)) return;
+             if (handleApiKeyError(err)) {
+                setIsProcessingAudio(false);
+                return;
+             }
              const parsedError = parseErrorMessage(err);
             if (parsedError === 'Aborted') {
                 setAppStatus({ status: 'error', error: "Generation stopped. This could be due to cancellation or a mobile network interruption." });
@@ -2521,51 +2681,87 @@ const App: React.FC = () => {
         return [...generationHistory].sort((a, b) => b.id - a.id);
     }, [generationHistory, savedItems, historyFilter]);
 
-    if (!hasConfirmedApiKey) {
-        return (
-            <div className="bg-gray-900 text-white min-h-screen flex items-center justify-center">
-                <div className="text-center p-8 max-w-lg mx-auto bg-gray-800 rounded-xl shadow-2xl">
-                    <SparklesIcon className="w-16 h-16 mx-auto text-indigo-400 mb-4" />
-                    <h1 className="text-3xl font-bold text-gray-100 mb-2">Welcome to Story Weaver</h1>
-                    <p className="text-gray-400 mb-6">
-                        This application uses advanced models like <strong>Veo</strong> for video and <strong>Gemini 3 Pro</strong> for images, which require an API key from a <strong>paid Google Cloud project</strong>. Please select a key with the "Generative AI API" enabled.
-                    </p>
-                    <button
-                        onClick={handleSelectKey}
-                        className="w-full flex items-center justify-center gap-3 py-3 px-4 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-500 disabled:bg-gray-600 transition-colors"
-                    >
-                        Select API Key
-                    </button>
-                    <p className="text-xs text-gray-500 mt-4">
-                        For more information on billing and model access, please see the{' '}
-                        <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="underline hover:text-indigo-400">
-                            billing documentation
-                        </a>.
-                    </p>
-                </div>
-            </div>
-        );
-    }
+    const selectedCurrencyInfo = CURRENCY_INFO[creditSettings.currency];
+    const displayCredit = creditSettings.creditBalance * selectedCurrencyInfo.rate;
 
     return (
         <div className="bg-gray-900 text-white min-h-screen font-sans flex flex-col md:flex-row">
             <aside className="w-full md:w-96 bg-gray-800 p-4 space-y-6 overflow-y-auto shrink-0 border-r border-gray-700/50">
                 <div className="flex items-center justify-between">
                     <h1 className="text-2xl font-bold text-indigo-400 tracking-tight">Story Weaver</h1>
-                    {/* Daily Usage Stats moved to header */}
-                     <div className="flex items-center gap-3 bg-gray-900/50 px-3 py-1.5 rounded-full border border-gray-700/50">
-                        <div className="text-center">
-                            <span className="text-[10px] text-gray-400 block leading-none">IMG</span>
-                            <span className="text-xs font-bold text-white">{dailyCounts.images}</span>
+                     <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-3 bg-gray-900/50 px-3 py-1.5 rounded-full border border-gray-700/50">
+                            <div className="text-center">
+                                <span className="text-[10px] text-gray-400 block leading-none">IMG</span>
+                                <span className="text-xs font-bold text-white">{dailyCounts.images}</span>
+                            </div>
+                            <div className="w-px h-6 bg-gray-700"></div>
+                            <div className="text-center">
+                                <span className="text-[10px] text-gray-400 block leading-none">VID</span>
+                                <span className="text-xs font-bold text-white">{dailyCounts.videos}</span>
+                            </div>
                         </div>
-                        <div className="w-px h-6 bg-gray-700"></div>
-                        <div className="text-center">
-                            <span className="text-[10px] text-gray-400 block leading-none">VID</span>
-                            <span className="text-xs font-bold text-white">{dailyCounts.videos}</span>
+                        <div className="relative" ref={creditAdderRef}>
+                            <button 
+                                onClick={() => setIsCreditAdderOpen(prev => !prev)}
+                                className="flex items-center gap-2 bg-gray-900/50 px-3 py-1.5 rounded-full border border-gray-700/50 hover:border-indigo-500 transition-colors"
+                                title="Click to add or view credit details"
+                            >
+                                <CreditCardIcon className={`w-4 h-4 ${displayCredit > 0 ? 'text-green-400' : 'text-yellow-400'}`} />
+                                <div className="text-left">
+                                     <span className="text-[10px] text-gray-400 block leading-none">CREDIT</span>
+                                     <span className="text-xs font-bold text-white">{selectedCurrencyInfo.symbol}{displayCredit.toFixed(2)}</span>
+                                </div>
+                            </button>
+                            {isCreditAdderOpen && (
+                                <div className="absolute top-full right-0 mt-2 w-64 bg-gray-800 border border-gray-700 rounded-lg shadow-xl p-4 z-20 animate-in fade-in slide-in-from-top-2">
+                                    <h3 className="text-sm font-bold text-gray-300 mb-3">Add Credit</h3>
+                                    <div className="flex items-center gap-2 mb-3">
+                                         <select
+                                            value={creditSettings.currency}
+                                            onChange={e => {
+                                                const newCurrency = e.target.value as 'USD' | 'SEK';
+                                                setCreditSettings(s => ({...s, currency: newCurrency}));
+                                                saveCreditSettings({ ...creditSettings, currency: newCurrency });
+                                            }}
+                                            className="bg-gray-900 border border-gray-600 rounded p-2 text-xs focus:border-indigo-500 h-10"
+                                        >
+                                            <option value="USD">USD ($)</option>
+                                            <option value="SEK">SEK (kr)</option>
+                                        </select>
+                                        <input
+                                            type="number"
+                                            value={creditToAdd}
+                                            onChange={e => {
+                                                const newAmount = Number(e.target.value);
+                                                setCreditToAdd(isNaN(newAmount) || newAmount < 0 ? 0 : newAmount);
+                                            }}
+                                            className="flex-1 min-w-0 bg-gray-900 border border-gray-600 rounded p-2 text-right focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 h-10"
+                                            placeholder="50"
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={handleAddCredit}
+                                        className="w-full px-3 py-2 bg-indigo-600 text-white font-bold rounded hover:bg-indigo-500 text-sm"
+                                    >
+                                        Add
+                                    </button>
+                                     <div className="my-2 border-t border-gray-700/50"></div>
+                                     <button
+                                         onClick={handleResetCredit}
+                                         className="w-full px-3 py-1.5 bg-red-900/50 text-red-300 text-xs font-bold rounded hover:bg-red-800/80 transition-colors"
+                                     >
+                                         Reset Balance
+                                     </button>
+                                     <p className="text-[10px] text-gray-600 italic pt-2 text-center">
+                                        Costs are estimates. See Google Cloud Console for official billing.
+                                    </p>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
-                
+
                 <button 
                     onClick={() => setShowStorybookPanel(true)} 
                     className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-indigo-900/50 border border-indigo-500/30 text-indigo-200 font-bold rounded-lg hover:bg-indigo-900 hover:border-indigo-400 transition-all shadow-sm"
@@ -2586,8 +2782,8 @@ const App: React.FC = () => {
                         <label htmlFor="prompt" className="text-sm font-bold text-gray-300">Your Story Idea</label>
                          <button 
                             onClick={() => audioFileInputRef.current?.click()}
-                            className="flex items-center gap-1.5 px-2 py-1 bg-gray-700/50 hover:bg-gray-700 rounded text-[10px] font-bold text-indigo-300 border border-indigo-500/30 transition-colors"
-                            disabled={isProcessingAudio}
+                            className="flex items-center gap-1.5 px-2 py-1 bg-gray-700/50 hover:bg-gray-700 rounded text-[10px] font-bold text-indigo-300 border border-indigo-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            disabled={isProcessingAudio || isGenerationDisabled}
                             title="Upload audio to generate story ideas"
                         >
                             {isProcessingAudio ? <LoaderIcon className="w-3 h-3 animate-spin" /> : <MusicalNoteIcon className="w-3 h-3" />}
@@ -2652,7 +2848,8 @@ const App: React.FC = () => {
                          <div className="flex gap-2">
                              <button
                                 onClick={() => uploadCharacterFileInputRef.current?.click()}
-                                className="flex items-center gap-1 px-2 py-1 bg-gray-700 text-gray-300 text-xs font-bold rounded hover:bg-gray-600"
+                                className="flex items-center gap-1 px-2 py-1 bg-gray-700 text-gray-300 text-xs font-bold rounded hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled={isGenerationDisabled}
                             >
                                 <UploadIcon className="w-3 h-3" /> Upload
                             </button>
@@ -2683,8 +2880,9 @@ const App: React.FC = () => {
                                         )}
                                         <button
                                             onClick={(e) => { e.stopPropagation(); setUploadingCharId(char.id); characterFileInputRef.current?.click(); }}
-                                            className="absolute bottom-0 right-0 p-1 bg-black/60 text-gray-300 hover:text-white rounded-tl hover:bg-black/80 transition-colors"
+                                            className="absolute bottom-0 right-0 p-1 bg-black/60 text-gray-300 hover:text-white rounded-tl hover:bg-black/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                             title="Upload Reference Image"
+                                            disabled={isGenerationDisabled}
                                         >
                                             <UploadIcon className="w-3 h-3" />
                                         </button>
@@ -2712,7 +2910,7 @@ const App: React.FC = () => {
                                 </div>
                                 <button 
                                     onClick={() => handleBuildCharacterVisual(char.id)}
-                                    disabled={char.isDescribing || (!char.description?.trim() && !char.originalImageBase64)}
+                                    disabled={char.isDescribing || (!char.description?.trim() && !char.originalImageBase64) || isGenerationDisabled}
                                     className={`w-full py-1.5 border rounded text-[10px] font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed
                                         ${char.imagePreview 
                                             ? 'bg-gray-700 text-gray-300 border-gray-600 hover:bg-gray-600 hover:text-white' 
@@ -2814,9 +3012,9 @@ const App: React.FC = () => {
                             onChange={(e) => setVideoModel(e.target.value)}
                             className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
                         >
-                            {/* FIX: Removed deprecated Veo 2 models and simplified names for Veo 3.1. */}
-                            <option value="veo-3.1-fast-generate-preview">Veo (Fast - Recommended)</option>
-                            <option value="veo-3.1-generate-preview">Veo (High Quality)</option>
+                            <option value="veo-2-fast-generate-preview">Veo 2 (Fast)</option>
+                            <option value="veo-3.1-fast-generate-preview">Veo 3.1 (Fast - Recommended)</option>
+                            <option value="veo-3.1-generate-preview">Veo 3.1 (High Quality)</option>
                         </select>
                     </div>
                     <div className="space-y-1 col-span-2">
@@ -2848,7 +3046,7 @@ const App: React.FC = () => {
                 ) : (
                     <button
                         onClick={handleGenerate}
-                        disabled={!prompt.trim()}
+                        disabled={!prompt.trim() || isGenerationDisabled}
                         className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-500 disabled:bg-gray-600 disabled:cursor-not-allowed transition-all shadow-md"
                     >
                         <SparklesIcon className="w-5 h-5" />
@@ -2872,6 +3070,13 @@ const App: React.FC = () => {
             </aside>
 
             <main className="flex-1 p-4 md:p-6 relative bg-gray-900 flex flex-col min-h-0">
+                {isGenerationDisabled && (
+                    <div className="mb-4 p-3 bg-yellow-900/50 border border-yellow-800 text-yellow-300 text-sm rounded flex items-center justify-center gap-3 animate-in fade-in">
+                        <ExclamationTriangleIcon className="w-5 h-5 text-yellow-400 shrink-0" />
+                        <span className="font-bold">Generation Disabled:</span>
+                        <span>Please add credit in the sidebar to enable creating new content.</span>
+                    </div>
+                )}
                 {!currentGenerationItem && uploadedItems.length === 0 && (
                     <div className="flex-1 flex flex-col items-center justify-center text-center text-gray-500">
                         <div className="p-6 bg-gray-800 rounded-full mb-4">
@@ -2982,11 +3187,11 @@ const App: React.FC = () => {
                                                         {scene.src && !scene.isRegenerating && (
                                                             <>
                                                                 <button onClick={() => saveScene(currentGenerationItem.id, index)} className={`p-1.5 rounded hover:bg-gray-600 ${isSaved ? 'text-indigo-400' : 'text-gray-400'}`} title={isSaved ? 'Unsave' : 'Save'}><BookmarkIcon className="w-4 h-4" solid={isSaved} /></button>
-                                                                <button onClick={() => openAngleSelectionModal(currentGenerationItem.id, index)} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded" title="More Angles"><CameraIcon className="w-4 h-4" /></button>
-                                                                <button onClick={() => startEditing(currentGenerationItem.id, index)} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded" title="Edit Image"><SparklesIcon className="w-4 h-4" /></button>
+                                                                <button onClick={() => openAngleSelectionModal(currentGenerationItem.id, index)} disabled={isGenerationDisabled} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="More Angles"><CameraIcon className="w-4 h-4" /></button>
+                                                                <button onClick={() => startEditing(currentGenerationItem.id, index)} disabled={isGenerationDisabled} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Edit Image"><SparklesIcon className="w-4 h-4" /></button>
                                                             </>
                                                         )}
-                                                        <button onClick={() => handleRegenerateScene(currentGenerationItem.id, index)} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded" title="Regenerate"><RefreshIcon className="w-4 h-4" /></button>
+                                                        <button onClick={() => handleRegenerateScene(currentGenerationItem.id, index)} disabled={isGenerationDisabled} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Regenerate"><RefreshIcon className="w-4 h-4" /></button>
                                                     </div>
                                                 </div>
                                                 <p className="text-xs text-gray-400 line-clamp-2 mb-3" title={scene.prompt}>{scene.prompt}</p>
@@ -3073,8 +3278,8 @@ const App: React.FC = () => {
                                                         ) : (
                                                             <button
                                                                 onClick={() => handleGenerateVideo(currentGenerationItem.id, index)}
-                                                                disabled={currentGenerationItem.videoStates[index].status === 'loading'}
-                                                                className="w-full py-2 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded disabled:bg-gray-600"
+                                                                disabled={currentGenerationItem.videoStates[index].status === 'loading' || isGenerationDisabled}
+                                                                className="w-full py-2 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded disabled:bg-gray-600 disabled:cursor-not-allowed"
                                                             >
                                                                 Generate Clip
                                                             </button>
@@ -3095,7 +3300,7 @@ const App: React.FC = () => {
                                                                     <button onClick={() => handleVideoClipNavigation(currentGenerationItem.id, index, 'next')} disabled={currentGenerationItem.videoStates[index].currentClipIndex === currentGenerationItem.videoStates[index].clips.length - 1} className="text-gray-400 hover:text-white disabled:opacity-30"><ChevronRightIcon className="w-4 h-4"/></button>
                                                                 </div>
                                                                 {currentGenerationItem.videoStates[index].currentClipIndex === currentGenerationItem.videoStates[index].clips.length - 1 && (
-                                                                     <button onClick={() => handleGenerateVideo(currentGenerationItem.id, index, true)} disabled={currentGenerationItem.videoStates[index].status === 'loading'} className="w-full py-1.5 bg-teal-700 hover:bg-teal-600 text-white text-[10px] font-bold rounded disabled:opacity-50">Extend Clip ( +4s )</button>
+                                                                     <button onClick={() => handleGenerateVideo(currentGenerationItem.id, index, true)} disabled={currentGenerationItem.videoStates[index].status === 'loading' || isGenerationDisabled} className="w-full py-1.5 bg-teal-700 hover:bg-teal-600 text-white text-[10px] font-bold rounded disabled:opacity-50 disabled:cursor-not-allowed">Extend Clip ( +4s )</button>
                                                                 )}
                                                              </div>
                                                         )}
@@ -3257,7 +3462,7 @@ const App: React.FC = () => {
                                 ) : (
                                     <button
                                         onClick={generateEditVariation}
-                                        disabled={(!editingScene.editPrompt.trim() && !hasDrawn && !editingScene.overlayImage)}
+                                        disabled={(!editingScene.editPrompt.trim() && !hasDrawn && !editingScene.overlayImage) || isGenerationDisabled}
                                         className="w-full py-3 bg-indigo-600 text-white font-bold rounded hover:bg-indigo-500 disabled:bg-gray-600 disabled:cursor-not-allowed shadow-lg flex items-center justify-center gap-2"
                                     >
                                         <SparklesIcon className="w-4 h-4" />
@@ -3358,7 +3563,7 @@ const App: React.FC = () => {
                             </button>
                             <button 
                                 onClick={handleGenerateCameraAngles} 
-                                disabled={!selectedAngle}
+                                disabled={!selectedAngle || isGenerationDisabled}
                                 className="px-6 py-2.5 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed transition-all shadow-lg shadow-indigo-900/20 flex items-center gap-2"
                             >
                                 <SparklesIcon className="w-4 h-4" />
@@ -3473,7 +3678,7 @@ const App: React.FC = () => {
                                                         >
                                                             {ACCENT_OPTIONS.map(a => <option key={a} value={a}>{a}</option>)}
                                                         </select>
-                                                        <button onClick={handleGenerateNarrativeAudio} disabled={storybookContent.isGeneratingNarrativeAudio || !storybookContent.storyNarrative.trim()} className="text-indigo-400 hover:text-white disabled:opacity-50 w-full sm:w-auto flex justify-center py-1 sm:py-0">
+                                                        <button onClick={handleGenerateNarrativeAudio} disabled={storybookContent.isGeneratingNarrativeAudio || !storybookContent.storyNarrative.trim() || isGenerationDisabled} className="text-indigo-400 hover:text-white disabled:opacity-50 w-full sm:w-auto flex justify-center py-1 sm:py-0">
                                                             {storybookContent.isGeneratingNarrativeAudio ? <LoaderIcon className="w-4 h-4 animate-spin" /> : <SpeakerWaveIcon className="w-4 h-4" />}
                                                         </button>
                                                     </div>
@@ -3486,7 +3691,7 @@ const App: React.FC = () => {
                                                                 <StopIcon className="w-3 h-3" /> Stop
                                                             </button>
                                                         ) : (
-                                                            <button onClick={handleAskAiForStory} disabled={!storybookAiPrompt.trim()} className="px-4 py-1.5 bg-indigo-600 text-white font-bold rounded hover:bg-indigo-500 disabled:opacity-50 flex items-center gap-2 text-sm w-full sm:w-auto justify-center">
+                                                            <button onClick={handleAskAiForStory} disabled={!storybookAiPrompt.trim() || isGenerationDisabled} className="px-4 py-1.5 bg-indigo-600 text-white font-bold rounded hover:bg-indigo-500 disabled:opacity-50 flex items-center gap-2 text-sm w-full sm:w-auto justify-center">
                                                                 Generate Narrative
                                                             </button>
                                                         )
@@ -3496,7 +3701,7 @@ const App: React.FC = () => {
                                                                 <StopIcon className="w-4 h-4" /> Stop Analysis
                                                             </button>
                                                         ) : (
-                                                            <button onClick={handleAnalyzeStory} disabled={!storybookContent.storyNarrative.trim()} className="w-full flex items-center justify-center gap-2 py-2 px-3 bg-teal-600 text-white font-bold rounded-lg hover:bg-teal-500 disabled:opacity-50 transition-all text-sm shadow-sm border border-teal-500/30">
+                                                            <button onClick={handleAnalyzeStory} disabled={!storybookContent.storyNarrative.trim() || isGenerationDisabled} className="w-full flex items-center justify-center gap-2 py-2 px-3 bg-teal-600 text-white font-bold rounded-lg hover:bg-teal-500 disabled:opacity-50 transition-all text-sm shadow-sm border border-teal-500/30">
                                                                 {isStorybookAnalyzing ? <LoaderIcon className="w-4 h-4 animate-spin" /> : <SparklesIcon className="w-4 h-4" />}
                                                                 <span>{isStorybookAnalyzing ? 'Analyzing Story...' : 'Analyze & Create Scenes'}</span>
                                                             </button>
@@ -3530,7 +3735,7 @@ const App: React.FC = () => {
                                                                 {copiedId === `desc-${scene.id}` ? <CheckIcon className="w-3 h-3 text-green-400" /> : <ClipboardIcon className="w-3 h-3" />}
                                                             </button>
                                                             <button onClick={() => handleSceneLockToggle(scene.id, 'description')} className="text-gray-500 hover:text-gray-300 transition-colors">{scene.isDescriptionLocked ? <LockClosedIcon className="w-3 h-3" /> : <LockOpenIcon className="w-3 h-3" />}</button>
-                                                            <button onClick={() => handleGenerateSceneFromStorybook(index, scene.imageDescription)} className="text-indigo-400 hover:text-indigo-300 transition-colors" title="Generate Image"><SparklesIcon className="w-3 h-3" /></button>
+                                                            <button onClick={() => handleGenerateSceneFromStorybook(index, scene.imageDescription)} disabled={isGenerationDisabled} className="text-indigo-400 hover:text-indigo-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Generate Image"><SparklesIcon className="w-3 h-3" /></button>
                                                         </div>
                                                      </div>
                                                     <textarea
@@ -3589,8 +3794,9 @@ const App: React.FC = () => {
                                                 </button>
                                             ) : (
                                                 <button 
-                                                    onClick={handleCreateStoryboardFromScript} 
-                                                    className="w-full max-w-md py-4 bg-gradient-to-r from-teal-600 to-teal-500 text-white font-bold rounded-xl shadow-lg hover:from-teal-500 hover:to-teal-400 flex items-center justify-center gap-3 transition-all transform hover:scale-[1.02]"
+                                                    onClick={handleCreateStoryboardFromScript}
+                                                    disabled={isGenerationDisabled}
+                                                    className="w-full max-w-md py-4 bg-gradient-to-r from-teal-600 to-teal-500 text-white font-bold rounded-xl shadow-lg hover:from-teal-500 hover:to-teal-400 flex items-center justify-center gap-3 transition-all transform hover:scale-[1.02] disabled:from-gray-600 disabled:to-gray-500 disabled:cursor-not-allowed"
                                                 >
                                                     <SparklesIcon className="w-6 h-6" />
                                                     <span>Generate Storyboard</span>
