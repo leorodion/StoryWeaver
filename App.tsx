@@ -101,12 +101,19 @@ type ConfirmationModalState = {
     onCancel: () => void;
 };
 
+type GenerationModalState = {
+    isOpen: boolean;
+    type: 'image' | 'video';
+    target: { generationId: number; sceneIndex: number; extend: boolean };
+    model: string;
+    onConfirm: (model: string) => void;
+};
+
 // COST ESTIMATION CONSTANTS (based on public pricing, may become outdated)
 const COST_MAP: { [key: string]: number } = {
     'gemini-2.5-flash-image': 0.0025,
     'gemini-3-pro-image-preview': 0.005,
     'imagen-4.0-generate-001': 0.02,
-    'veo-2-fast-generate-preview': 0.10, // estimate per clip
     'veo-3.1-fast-generate-preview': 0.12, // estimate per clip
     'veo-3.1-generate-preview': 0.25, // estimate per clip
 };
@@ -260,7 +267,7 @@ const App: React.FC = () => {
     const [aspectRatio, setAspectRatio] = useState<string>('16:9');
     const [imageStyle, setImageStyle] = useState<string>('Afro-toon');
     const [imageModel, setImageModel] = useState<string>('gemini-2.5-flash-image');
-    const [videoModel, setVideoModel] = useState<string>('veo-2-fast-generate-preview');
+    const [videoModel, setVideoModel] = useState<string>('veo-3.1-fast-generate-preview');
     const [genre, setGenre] = useState<string>('General');
     const [appStatus, setAppStatus] = useState<AppStatus>({ status: 'idle', error: null });
     const [statusMessage, setStatusMessage] = useState<string>('');
@@ -346,6 +353,14 @@ const App: React.FC = () => {
         message: '',
         onConfirm: () => {},
         onCancel: () => {},
+    });
+
+    const [generationModalState, setGenerationModalState] = useState<GenerationModalState>({
+        isOpen: false,
+        type: 'image',
+        target: { generationId: 0, sceneIndex: 0, extend: false },
+        model: '',
+        onConfirm: () => {},
     });
 
     const isGenerationDisabled = creditSettings.creditBalance <= 0;
@@ -768,7 +783,7 @@ const App: React.FC = () => {
         return null;
     }, [activeHistoryIndex, generationHistory]);
 
-    const incrementCount = useCallback(async (type: 'images' | 'videos', amount = 1) => {
+    const incrementCount = useCallback(async (type: 'images' | 'videos', amount: number, modelKey: string) => {
         // Daily usage counts
         setDailyCounts(currentCounts => {
             const today = new Date().toDateString();
@@ -792,8 +807,7 @@ const App: React.FC = () => {
 
         // Deduct from credit balance
         setCreditSettings(current => {
-            const modelKey = type === 'images' ? imageModel : videoModel;
-            const costPerUnit = COST_MAP[modelKey] || (type === 'images' ? 0.0025 : 0.10);
+            const costPerUnit = COST_MAP[modelKey] || 0;
             const costToDeduct = amount * costPerUnit; // Cost is always in USD
             const newBalance = current.creditBalance - costToDeduct;
 
@@ -804,7 +818,7 @@ const App: React.FC = () => {
             saveCreditSettings(updatedSettings);
             return updatedSettings;
         });
-    }, [imageModel, videoModel]);
+    }, []);
     
     const handleAddCredit = () => {
         setCreditSettings(current => {
@@ -1067,7 +1081,7 @@ const App: React.FC = () => {
                 
                 const successfulCount = generatedScenes.filter(s => s.src).length;
                 if (successfulCount > 0) {
-                    incrementCount('images', successfulCount);
+                    incrementCount('images', successfulCount, imageModel);
                 }
                 
                 setAppStatus({ status: 'idle', error: null });
@@ -1175,7 +1189,7 @@ const App: React.FC = () => {
             }));
     
             if (src) {
-                incrementCount('images', 1);
+                incrementCount('images', 1, imageModel);
                 setZoomedImage(src);
             }
             setAppStatus({ status: 'idle', error: null });
@@ -1544,7 +1558,7 @@ const App: React.FC = () => {
                     originalImageMimeType: 'image/png',
                     isDescribing: false
                 } : c));
-                incrementCount('images', 1);
+                incrementCount('images', 1, 'gemini-2.5-flash-image');
                 setZoomedImage(src);
             } else {
                 throw new Error(error || "Failed to generate character visual");
@@ -1571,11 +1585,7 @@ const App: React.FC = () => {
         setCharacters(chars => chars.filter(c => c.id !== id));
     };
 
-    const handleGenerate = useCallback(async () => {
-        if (!prompt.trim() || appStatus.status === 'loading') {
-            return;
-        }
-
+    const executeBatchGeneration = useCallback(async (modelToUse: string) => {
         setAppStatus({ status: 'loading', error: null });
         setStatusMessage('Starting generation...');
         setActiveVideoIndex(-1);
@@ -1591,7 +1601,7 @@ const App: React.FC = () => {
                 imageStyle,
                 genre,
                 characters,
-                imageModel
+                imageModel: modelToUse
             };
             
             setGenerationHistory(prev => [...prev, newHistoryItem]);
@@ -1605,14 +1615,14 @@ const App: React.FC = () => {
                 genre,
                 characters,
                 characters, 
-                imageModel,
+                modelToUse,
                 (message) => setStatusMessage(message),
                 signal
             );
             
             const successfulCount = result.storyboard.filter(s => s.src).length;
             if (successfulCount > 0) {
-                incrementCount('images', successfulCount);
+                incrementCount('images', successfulCount, modelToUse);
             }
 
             setGenerationHistory(prev => prev.map(item =>
@@ -1674,10 +1684,26 @@ const App: React.FC = () => {
         } finally {
             abortControllerRef.current = null;
         }
-    }, [prompt, imageCount, aspectRatio, imageStyle, genre, characters, imageModel, appStatus.status, incrementCount]);
+    }, [prompt, imageCount, aspectRatio, imageStyle, genre, characters, incrementCount]);
+
+    const handleGenerate = useCallback(() => {
+        if (!prompt.trim() || appStatus.status === 'loading') {
+            return;
+        }
+        
+        setGenerationModalState({
+            isOpen: true,
+            type: 'image',
+            target: { generationId: -1, sceneIndex: -1, extend: false },
+            model: imageModel,
+            onConfirm: (selectedModel: string) => {
+                executeBatchGeneration(selectedModel);
+            },
+        });
+    }, [prompt, appStatus.status, imageModel, executeBatchGeneration]);
 
 
-    const handleRegenerateScene = useCallback(async (generationId: number, sceneIndex: number) => {
+    const handleRegenerateScene = useCallback(async (generationId: number, sceneIndex: number, modelToUse: string) => {
         const generationItem = generationHistory.find(item => item.id === generationId);
         if (!generationItem) return;
 
@@ -1705,14 +1731,14 @@ const App: React.FC = () => {
                 generationItem.genre,
                 generationItem.characters,
                 generationItem.characters,
-                generationItem.imageModel,
+                modelToUse,
                 null,
                 null,
                 signal
             );
 
             if (src) {
-                incrementCount('images', 1);
+                incrementCount('images', 1, modelToUse);
                 setZoomedImage(src);
             }
 
@@ -1846,7 +1872,7 @@ const App: React.FC = () => {
         }));
     };
 
-    const handleGenerateVideo = useCallback(async (generationId: number, sceneIndex: number, extendFromLastClip = false) => {
+    const handleGenerateVideo = useCallback(async (generationId: number, sceneIndex: number, extendFromLastClip = false, modelToUse: string) => {
         const generationItem = generationHistory.find(item => item.id === generationId);
         if (!generationItem) return;
     
@@ -1899,7 +1925,7 @@ const App: React.FC = () => {
                 generationItem.characters,
                 audioOptions,
                 generationItem.imageStyle,
-                videoModel,
+                modelToUse,
                 '720p',
                 videoState.cameraMovement,
                 (message) => updateVideoState({ loadingMessage: message }),
@@ -1907,7 +1933,7 @@ const App: React.FC = () => {
                 signal
             );
             
-            incrementCount('videos', 1);
+            incrementCount('videos', 1, modelToUse);
 
             const newClip: VideoClip = { videoUrl, audioUrl, videoObject, audioBase64 };
             const currentClips = videoState.clips || [];
@@ -1944,7 +1970,28 @@ const App: React.FC = () => {
         } finally {
             abortControllerRef.current = null;
         }
-    }, [generationHistory, videoModel, incrementCount]);
+    }, [generationHistory, incrementCount]);
+
+    const openConfirmationModal = (type: 'image' | 'video', generationId: number, sceneIndex: number, extend = false) => {
+        const generationItem = generationHistory.find(item => item.id === generationId);
+        if (!generationItem) return;
+    
+        const defaultModel = type === 'image' ? generationItem.imageModel : videoModel;
+    
+        setGenerationModalState({
+            isOpen: true,
+            type,
+            target: { generationId, sceneIndex, extend },
+            model: defaultModel,
+            onConfirm: (selectedModel: string) => {
+                if (type === 'image') {
+                    handleRegenerateScene(generationId, sceneIndex, selectedModel);
+                } else {
+                    handleGenerateVideo(generationId, sceneIndex, extend, selectedModel);
+                }
+            },
+        });
+    };
     
     const handleHistoryNavigation = (index: number) => {
         if (index >= 0 && index < generationHistory.length) {
@@ -2096,7 +2143,7 @@ const App: React.FC = () => {
     
             const successfulCount = angleScenes.filter(s => s.src).length;
             if (successfulCount > 0) {
-                incrementCount('images', successfulCount);
+                incrementCount('images', successfulCount, 'gemini-2.5-flash-image');
             }
     
             setGenerationHistory(prev => prev.map(item => {
@@ -2319,7 +2366,7 @@ const App: React.FC = () => {
             });
     
             if (src && !error) {
-                incrementCount('images', 1);
+                incrementCount('images', 1, 'gemini-2.5-flash-image');
                 
                 setEditingScene(prev => {
                     if (!prev) return null;
@@ -2683,6 +2730,17 @@ const App: React.FC = () => {
 
     const selectedCurrencyInfo = CURRENCY_INFO[creditSettings.currency];
     const displayCredit = creditSettings.creditBalance * selectedCurrencyInfo.rate;
+    
+    const imageModelOptions = [
+        { value: 'gemini-2.5-flash-image', label: 'Gemini Flash (Fast)' },
+        { value: 'gemini-3-pro-image-preview', label: 'Nano Banana Pro (High Quality)' },
+        { value: 'imagen-4.0-generate-001', label: 'Imagen 4 (Legacy)' },
+    ];
+    
+    const videoModelOptions = [
+        { value: 'veo-3.1-fast-generate-preview', label: 'Veo 3.1 (Fast - Recommended)' },
+        { value: 'veo-3.1-generate-preview', label: 'Veo 3.1 (High Quality)' },
+    ];
 
     return (
         <div className="bg-gray-900 text-white min-h-screen font-sans flex flex-col md:flex-row">
@@ -3001,7 +3059,7 @@ const App: React.FC = () => {
                             className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
                         >
                             <option value="gemini-2.5-flash-image">Gemini Flash (Fast)</option>
-                            <option value="gemini-3-pro-image-preview">Gemini 3 Pro (High Quality)</option>
+                            <option value="gemini-3-pro-image-preview">Nano Banana Pro (High Quality)</option>
                             <option value="imagen-4.0-generate-001">Imagen 4 (Legacy)</option>
                         </select>
                     </div>
@@ -3012,7 +3070,6 @@ const App: React.FC = () => {
                             onChange={(e) => setVideoModel(e.target.value)}
                             className="w-full p-2 bg-gray-900 border border-gray-700 rounded focus:border-indigo-500"
                         >
-                            <option value="veo-2-fast-generate-preview">Veo 2 (Fast)</option>
                             <option value="veo-3.1-fast-generate-preview">Veo 3.1 (Fast - Recommended)</option>
                             <option value="veo-3.1-generate-preview">Veo 3.1 (High Quality)</option>
                         </select>
@@ -3191,7 +3248,7 @@ const App: React.FC = () => {
                                                                 <button onClick={() => startEditing(currentGenerationItem.id, index)} disabled={isGenerationDisabled} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Edit Image"><SparklesIcon className="w-4 h-4" /></button>
                                                             </>
                                                         )}
-                                                        <button onClick={() => handleRegenerateScene(currentGenerationItem.id, index)} disabled={isGenerationDisabled} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Regenerate"><RefreshIcon className="w-4 h-4" /></button>
+                                                        <button onClick={() => openConfirmationModal('image', currentGenerationItem.id, index)} disabled={isGenerationDisabled} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Regenerate"><RefreshIcon className="w-4 h-4" /></button>
                                                     </div>
                                                 </div>
                                                 <p className="text-xs text-gray-400 line-clamp-2 mb-3" title={scene.prompt}>{scene.prompt}</p>
@@ -3277,7 +3334,7 @@ const App: React.FC = () => {
                                                             </button>
                                                         ) : (
                                                             <button
-                                                                onClick={() => handleGenerateVideo(currentGenerationItem.id, index)}
+                                                                onClick={() => openConfirmationModal('video', currentGenerationItem.id, index)}
                                                                 disabled={currentGenerationItem.videoStates[index].status === 'loading' || isGenerationDisabled}
                                                                 className="w-full py-2 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded disabled:bg-gray-600 disabled:cursor-not-allowed"
                                                             >
@@ -3300,7 +3357,7 @@ const App: React.FC = () => {
                                                                     <button onClick={() => handleVideoClipNavigation(currentGenerationItem.id, index, 'next')} disabled={currentGenerationItem.videoStates[index].currentClipIndex === currentGenerationItem.videoStates[index].clips.length - 1} className="text-gray-400 hover:text-white disabled:opacity-30"><ChevronRightIcon className="w-4 h-4"/></button>
                                                                 </div>
                                                                 {currentGenerationItem.videoStates[index].currentClipIndex === currentGenerationItem.videoStates[index].clips.length - 1 && (
-                                                                     <button onClick={() => handleGenerateVideo(currentGenerationItem.id, index, true)} disabled={currentGenerationItem.videoStates[index].status === 'loading' || isGenerationDisabled} className="w-full py-1.5 bg-teal-700 hover:bg-teal-600 text-white text-[10px] font-bold rounded disabled:opacity-50 disabled:cursor-not-allowed">Extend Clip ( +4s )</button>
+                                                                     <button onClick={() => openConfirmationModal('video', currentGenerationItem.id, index, true)} disabled={currentGenerationItem.videoStates[index].status === 'loading' || isGenerationDisabled} className="w-full py-1.5 bg-teal-700 hover:bg-teal-600 text-white text-[10px] font-bold rounded disabled:opacity-50 disabled:cursor-not-allowed">Extend Clip ( +4s )</button>
                                                                 )}
                                                              </div>
                                                         )}
@@ -3573,6 +3630,57 @@ const App: React.FC = () => {
                     </div>
                 </div>
             )}
+
+            {generationModalState.isOpen && (() => {
+                const isBatchGeneration = generationModalState.target.generationId === -1;
+                const options = generationModalState.type === 'image' ? imageModelOptions : videoModelOptions;
+                const costPerUnit = COST_MAP[generationModalState.model] || 0;
+                const totalCost = isBatchGeneration ? costPerUnit * imageCount : costPerUnit;
+                const displayCost = totalCost * selectedCurrencyInfo.rate;
+                const title = isBatchGeneration ? `Generate ${imageCount} Scene${imageCount > 1 ? 's' : ''}` : (generationModalState.type === 'image' ? 'Regenerate Image' : (generationModalState.target.extend ? 'Extend Video Clip' : 'Generate Video Clip'));
+                const costLabel = isBatchGeneration ? `Total Est. Cost (${imageCount}x):` : 'Estimated Cost:';
+
+                return (
+                    <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+                        <div className="bg-gray-800 rounded-lg max-w-md w-full p-6 shadow-2xl border border-gray-700 animate-in fade-in zoom-in-95">
+                            <h3 className="text-lg font-bold text-white mb-4">{title}</h3>
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Model</label>
+                                    <select
+                                        value={generationModalState.model}
+                                        onChange={(e) => setGenerationModalState(s => ({ ...s, model: e.target.value }))}
+                                        className="w-full mt-1 p-2 bg-gray-900 border border-gray-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition"
+                                    >
+                                        {options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                                    </select>
+                                </div>
+                                <div className="text-sm text-gray-400 flex justify-between items-center bg-gray-900/50 p-3 rounded-lg">
+                                    <span>{costLabel}</span>
+                                    <span className="font-bold text-white">{selectedCurrencyInfo.symbol}{displayCost.toFixed(4)}</span>
+                                </div>
+                            </div>
+                            <div className="flex justify-end gap-3 mt-6">
+                                <button
+                                    onClick={() => setGenerationModalState({ ...generationModalState, isOpen: false })}
+                                    className="px-4 py-2 rounded-lg text-gray-300 font-bold bg-gray-700 hover:bg-gray-600 transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        generationModalState.onConfirm(generationModalState.model);
+                                        setGenerationModalState({ ...generationModalState, isOpen: false });
+                                    }}
+                                    className="px-4 py-2 rounded-lg text-white font-bold bg-indigo-600 hover:bg-indigo-500 transition-colors"
+                                >
+                                    Confirm & Generate
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            })()}
 
             {[
                 { 
