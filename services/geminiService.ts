@@ -1,26 +1,27 @@
 
-import { GoogleGenAI, Type, GenerateContentResponse, Modality, Part, GenerateVideosOperation, VideoGenerationReferenceImage, VideoGenerationReferenceType } from "@google/genai";
+import { GoogleGenAI, Type, GenerateContentResponse, Modality, GenerateVideosOperation, VideoGenerationReferenceType } from "@google/genai";
+import type { Part, VideoGenerationReferenceImage } from "@google/genai";
 import { base64ToBytes, pcmToWavBlob } from "../utils/fileUtils";
 import { parseErrorMessage } from "../utils/errorUtils";
 
-// Add Character type to be used in App.tsx
+// ... (Existing types remain unchanged)
 export type Character = {
   id: number;
   name: string;
   imagePreview: string | null;
-  originalImageBase64: string | null; // New field for the original base64 image data
-  originalImageMimeType: string | null; // New field for the original image MIME type
+  originalImageBase64: string | null;
+  originalImageMimeType: string | null;
   description: string | null;
-  detectedImageStyle: string | null; // New field for the style of the uploaded image
+  detectedImageStyle: string | null;
   isDescribing: boolean;
 };
 
 export type StoryboardSceneData = {
     id: number;
     imageDescription: string;
-    narration: string;
+    script: string; 
     isDescriptionLocked?: boolean;
-    isNarrationLocked?: boolean;
+    isScriptLocked?: boolean;
 
     audioSrc?: string | null;
     isGeneratingAudio?: boolean;
@@ -60,13 +61,15 @@ export type EditImageParams = {
   mimeType: string;
   editPrompt: string;
   aspectRatio: string;
-  imageStyle: string;
+  characterStyle: string;
+  visualStyle: string;
   genre: string;
   characters: Character[];
   hasVisualMasks?: boolean;
   signal?: AbortSignal;
   imageModel?: string;
   overlayImage?: { base64: string; mimeType: string; };
+  referenceImage?: { base64: string; mimeType: string; };
 };
 
 export const PREBUILT_VOICES = ['Kore', 'Puck', 'Zephyr', 'Charon', 'Fenrir'];
@@ -119,7 +122,7 @@ async function withRetry<T>(apiCall: () => Promise<T>, onRetryMessage?: (msg: st
                 errorMessage.toLowerCase().includes('internal server error');
 
             if (isRetryable && attempt < maxRetries) {
-                const delaySeconds = Math.pow(2, attempt) * 15; // 30s, 60s
+                const delaySeconds = Math.pow(2, attempt) * 15; 
                 const retryMsg = `Model is busy (Code: ${errorMessage.substring(0, 3)}). Retrying in ${delaySeconds}s... (Attempt ${attempt}/${maxRetries})`;
                 if (onRetryMessage) {
                     onRetryMessage(retryMsg);
@@ -140,7 +143,7 @@ export type StoryboardScene = {
     src: string | null;
     prompt: string;
     error?: string | null;
-    isCameraAngleFor?: number; // Index of the parent scene
+    isCameraAngleFor?: number; 
     angleName?: string;
 };
 
@@ -164,50 +167,101 @@ export const CAMERA_MOVEMENT_PROMPTS: { [key: string]: string } = {
 
 function getStyleInstructions(style: string): string {
     switch (style) {
-        case 'Afro-toon':
-            return `A vibrant 2D cartoon style inspired by Nigerian art. Characters are drawn with expressive faces and normal human proportions. They wear colorful traditional Nigerian attire like agbada, kaftans, or gele. The art uses bold, clean outlines and a simple, flat color palette, creating a lively and humorous feel. This is NOT a realistic or 3D style.`;
+        case 'Afro-toon': // Kept for legacy fallback, but mainly handled via characterStyle now
+            return `A vibrant 2D cartoon style inspired by Nigerian art. Characters are drawn with expressive faces and normal human proportions. They wear colorful traditional Nigerian attire. The art uses bold, clean outlines and a simple, flat color palette.`;
         case 'Realistic Photo':
-            return `A hyper-realistic, cinematic photograph. 8k resolution, high fidelity, realistic skin textures, natural lighting, and true-to-life proportions. Shot on a professional 35mm camera. NOT a drawing, NOT a painting, NOT a 3D render, NOT anime.`;
+            return `A hyper-realistic, cinematic photograph. 8k resolution, high fidelity, realistic skin textures, natural lighting, and true-to-life proportions. Shot on a professional 35mm camera.`;
         case '3D Render':
-            return `A high-quality 3D render, similar to modern animated feature films (Pixar/Disney style). Smooth textures, volumetric lighting, ambient occlusion, slightly stylized but three-dimensional character proportions.`;
+            return `A high-quality 3D render, similar to modern animated feature films (Pixar/Disney style). Smooth textures, volumetric lighting, ambient occlusion.`;
         case 'Anime':
-            return `Japanese Anime style. Cel-shaded, vibrant colors, expressive eyes, dynamic composition. 2D animation aesthetic.`;
+            return `Japanese Anime style. Cel-shaded, vibrant colors, expressive eyes, dynamic composition.`;
         case 'Illustration':
             return `A modern digital illustration. Clean lines, artistic shading, detailed but stylized.`;
         case 'Oil Painting':
-            return `Classic oil painting style. Visible brush strokes, rich textures, painterly lighting, canvas texture.`;
+            return `Classic oil painting style. Visible brush strokes, rich textures, painterly lighting.`;
         case 'Pixel Art':
-            return `Retro pixel art style. Low-res, blocky pixels, limited color palette, 8-bit or 16-bit video game aesthetic.`;
+            return `Retro pixel art style. Low-res, blocky pixels, limited color palette.`;
         case '2D Flat':
-            return `Flat 2D design. Minimalist, solid colors, no gradients, clean geometric shapes, corporate art style.`;
+            return `Flat 2D design. Minimalist, solid colors, no gradients, clean geometric shapes.`;
         case 'Video Game':
-            return `Modern video game graphics (Unreal Engine 5 style). High detail, dynamic lighting, glossy textures, cinematic game composition.`;
+            return `Modern video game graphics (Unreal Engine 5 style). High detail, dynamic lighting, glossy textures.`;
         case 'Watercolor':
-            return `Watercolor painting style. Soft edges, bleed effects, paper texture, pastel and washed-out colors, artistic and dreamy.`;
+            return `Watercolor painting style. Soft edges, bleed effects, paper texture, pastel colors.`;
         case 'Cyberpunk':
-            return `Cyberpunk aesthetic. Neon lights, high contrast, futuristic technology, gritty urban environment, purple and blue color palette.`;
+            return `Cyberpunk aesthetic. Neon lights, high contrast, futuristic technology, gritty urban environment.`;
         default:
-             // If it's a custom string or generic, try to embellish slightly if it looks like a simple name, otherwise return as is.
             return `In the style of ${style}.`;
     }
+}
+
+// Helper to get specific movie style instructions
+function getMovieStyleInstructions(movieStyle: string): string {
+    switch (movieStyle) {
+        case 'Nollywood':
+            return `
+            **CINEMATIC STYLE: NOLLYWOOD (NIGERIAN CINEMA)**
+            - **Core Aesthetic:** Grounded, dramatic, and heavily character-driven. Less reliance on high-tech action/shooting; emphasis on social drama, status, and family dynamics.
+            - **Visuals:** Settings must be authentically Nigerian (e.g., bustling Lagos streets, luxurious mansions with gold accents, or traditional village compounds).
+            - **Attire:** Characters often wear traditional Nigerian attire (e.g., Agbada, Ankara, Gele, Lace, Buba) or distinct modern Nigerian fashion.
+            - **Genre Adaptation:**
+              - **Comedy:** Physical, loud, often based on social misunderstandings or village vs. city tropes.
+              - **Romance:** High-stakes, often involving family approval or class difference.
+              - **History:** Focus on pre-colonial kingdoms or independence era aesthetics.
+            `;
+        case 'Bollywood':
+            return `
+            **CINEMATIC STYLE: BOLLYWOOD (INDIAN CINEMA)**
+            - **Core Aesthetic:** Grandiose, colorful, musical, and emotionally heightened. Larger than life.
+            - **Visuals:** High saturation, vibrant colors, dramatic lighting, and elaborate set designs.
+            - **Attire:** Characters often wear traditional Indian attire (e.g., Saris, Lehengas, Kurtas, Sherwanis) with elaborate jewelry, or flashy modern high-fashion.
+            - **Key Element:** Song and Dance energy. Even non-musical scenes should feel choreographed and rhythmic.
+            - **Genre Adaptation:**
+              - **Comedy:** Slapstick mixed with witty dialogue and dramatic irony.
+              - **Romance:** Poetic, destined, often involves wind-blown hair and intense eye contact.
+              - **Action:** Physics-defying, stylized, and heroic.
+            `;
+        case 'Hollywood':
+            return `
+            **CINEMATIC STYLE: HOLLYWOOD (AMERICAN BLOCKBUSTER)**
+            - **Core Aesthetic:** Polished, "serious", high-stakes, and action-oriented. High production value.
+            - **Visuals:** Cinematic color grading (often teal/orange), dynamic camera movement, depth of field, lens flares.
+            - **Action:** Emphasis on "shooting", gunplay, explosions, car chases, and physical combat. Fast pacing.
+            - **Genre Adaptation:**
+              - **Comedy:** Witty banter, situational humor, or satire.
+              - **Romance:** Chemistry-driven, often with obstacles or "meet-cutes".
+              - **History:** Epic scale, period-accurate costumes but with a modern cinematic sheen.
+            `;
+        case 'General':
+        default:
+            return `**CINEMATIC STYLE: GENERAL** - Focus on clear storytelling and universal visual appeal without specific regional constraints.`;
+    }
+}
+
+// Helper to construct strict character mandates
+function getCharacterConsistencyBible(characters: Character[]): string {
+    if (characters.length === 0) return "";
+    
+    return `
+    **VISUAL CONSISTENCY BIBLE (STRICT ENFORCEMENT REQUIRED)**
+    You must adhere to these character descriptions exactly in every 'imageDescription'.
+    
+    ${characters.map(c => `
+    --- CHARACTER: ${c.name.toUpperCase()} ---
+    VISUALS: ${c.description || "No specific description."}
+    MANDATE: Whenever ${c.name} appears, you MUST describe them wearing exactly the same clothes and having the same physical features defined above. Do not change their outfit unless the plot explicitly demands a costume change.
+    `).join('\n')}
+    `;
 }
 
 export async function generateCharacterDescription(imageBase64: string, mimeType: string, signal?: AbortSignal): Promise<{ description: string; detectedStyle: string }> {
     const ai = getAiClient();
     const imagePart = { inlineData: { data: imageBase64, mimeType }};
-    const prompt = `Analyze the person in the image. Generate a concise, single-line, comma-separated list of descriptive tags for an AI image generator to ensure high-fidelity recreation. Also, identify the primary visual art style of the character in the image from the following options: "Afro-toon", "Illustration", "3D Render", "Realistic Photo", "Oil Painting", "Pixel Art", "2D Flat", "Anime", "Clip Art", "Video Game", "Pastel Sketch", "Dark Fantasy", "Cyberpunk", "Steampunk", "Watercolor", "Art Nouveau". If the style doesn't fit exactly, choose the closest or provide a brief custom description.
+    const prompt = `Analyze the person in the image. Generate a concise, single-line, comma-separated list of descriptive tags for an AI image generator to ensure high-fidelity recreation. Also, identify the primary visual art style.
 
     **CRITICAL RULES:**
-    1.  **Format:** Return a JSON object with two keys: "description" (string) and "detectedStyle" (string).
-    2.  **Description Content:** Include gender, estimated age, ethnicity, face shape, eye color/shape, hair color/style, skin tone, and any highly distinctive features (e.g., beard, glasses, specific clothing if iconic). This should be a compact "character token" suitable for embedding.
-    3.  **Detected Style Content:** Choose one style from the provided list, or describe it concisely if not on the list.
-
-    **Example Output:**
-    {
-        "description": "woman, early 30s, West African, round face, dark brown eyes, long black braids, dark brown skin, wearing gold hoop earrings",
-        "detectedStyle": "Realistic Photo"
-    }`;
-
+    1.  **Format:** Return a JSON object with keys: "description" (string) and "detectedStyle" (string).
+    2.  **Description:** Gender, age, ethnicity, face, eyes, hair, skin, distinctive features, AND EXACT CLOTHING DETAILS (color, type, accessories).
+    `;
 
     const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
         model: 'gemini-3-pro-preview',
@@ -226,17 +280,13 @@ export async function generateCharacterDescription(imageBase64: string, mimeType
     }), undefined, signal);
 
     const text = response.text;
-    if (typeof text !== 'string') {
-        console.error("generateCharacterDescription received no text in response:", JSON.stringify(response, null, 2));
-        throw new Error("Failed to get a valid text response from the AI. The prompt may have been blocked or the model returned an empty result.");
-    }
+    if (typeof text !== 'string' || text.trim() === '') throw new Error("No text response or empty response for character description.");
 
     try {
         const parsed = JSON.parse(text);
         return { description: parsed.description.trim(), detectedStyle: parsed.detectedStyle.trim() };
     } catch (e) {
-        console.error("Failed to parse JSON response from character description:", text, e);
-        throw new Error("Failed to get a valid JSON response from the AI for character description.");
+        throw new Error("Failed to parse JSON response for character description.");
     }
 }
 
@@ -245,103 +295,70 @@ export async function generateCharacterVisual(
     uiSelectedStyle: string,
     signal?: AbortSignal
 ): Promise<{ src: string | null; error: string | null }> {
-    
-    // Path 1: User has uploaded an image and wants a consistent, full-body version.
     if (character.originalImageBase64 && character.originalImageMimeType) {
-        
-        // Determine the target style based on user's special rules.
-        let targetStyle = character.detectedImageStyle || uiSelectedStyle; // Default to detected style or fall back to UI selection.
+        let targetStyle = character.detectedImageStyle || uiSelectedStyle; 
         if (character.detectedImageStyle === 'Realistic Photo') {
-            targetStyle = 'Illustration'; // Per user request to convert "human" to illustration.
+            targetStyle = 'Illustration'; 
         }
 
-        const editPrompt = `Using the provided image as a perfect reference, generate a full-body view of the exact same character, '${character.name}'. The character's face, features, clothing, hairstyle, and colors must be perfectly preserved to be exactly the same as the reference. Place the character in a standing pose on a plain, solid white background. Do not add any shadows or other elements. The final image must be in the style of '${targetStyle}'.`;
+        const editPrompt = `Using the provided image as a perfect reference, generate a full-body view of the exact same character, '${character.name}'. The character's features, clothing, and colors must be perfectly preserved. Standing pose, plain white background. Style: '${targetStyle}'.`;
 
         return editImage({
             imageBase64: character.originalImageBase64,
             mimeType: character.originalImageMimeType,
             editPrompt: editPrompt,
             aspectRatio: '3:4',
-            imageStyle: targetStyle,
+            characterStyle: 'General', // Default for visual build
+            visualStyle: targetStyle,
             genre: 'General',
-            characters: [character], // Provide itself for context
+            characters: [character],
             hasVisualMasks: false,
             signal: signal,
-            imageModel: 'gemini-2.5-flash-image', // Use NanoBanana as requested
+            imageModel: 'gemini-2.5-flash-image', 
         });
 
-    } 
-    // Path 2: User has only provided a text description.
-    else if (character.description) {
-        const prompt = `Character sheet for a character named '${character.name}'. Full-body view from head to toe, centered, standing pose. ${character.description}. The background must be completely plain, solid white. No shadows, no other objects, no gradients.`;
-        
-        // Use generateSingleImage to create from text.
+    } else if (character.description) {
+        const prompt = `Character sheet for '${character.name}'. Full-body view, centered, standing pose. ${character.description}. Plain white background.`;
+        // FIX: Pass the single `character` object inside an array to match the expected parameter type.
         return generateSingleImage(
-            prompt,
-            '3:4',
-            uiSelectedStyle, // Use the style selected in the UI for text-based generation.
-            'General', 
-            [character],
-            [character],
-            'gemini-2.5-flash-image', // Use NanoBanana as requested.
-            null,
-            null,
-            signal
+            prompt, '3:4', 'General', uiSelectedStyle, 'General', [character], 'gemini-2.5-flash-image', null, null, signal
         );
-    }
-    // Path 3: Not enough information to generate.
-    else {
-        return { src: null, error: "Cannot generate visual without an original image or a description." };
+    } else {
+        return { src: null, error: "Cannot generate visual without an image or description." };
     }
 }
 
 export async function describeImageForConsistency(imageBase64: string, signal?: AbortSignal): Promise<string> {
     const ai = getAiClient();
     const imagePart = { inlineData: { data: imageBase64, mimeType: 'image/png' }};
-    const prompt = `You are an expert scene analyst for an AI image generator. Your task is to generate a very concise, comma-separated list of descriptive tags for the provided image.
-
-**CRITICAL RULES:**
-1.  **Format:** A single line of comma-separated tags. **DO NOT** use sentences, paragraphs, or labels (e.g., "Character:", "Setting:").
-2.  **Content:** Focus only on the most essential visual elements needed for recreation:
-    *   **Subject:** Main character(s) and their core features (e.g., 'boy with red shirt').
-    *   **Setting:** The immediate environment (e.g., 'in a classroom', 'at a desk').
-    *   **Atmosphere:** Key lighting and mood (e.g., 'sunny day', 'dim lighting').
-3.  **Brevity:** The entire output should be as short as possible while preserving the scene's essence. Aim for keywords over full descriptions.
-4.  **Goal:** Create a compact "scene token" that can be directly embedded into a larger prompt.
-
-**Example:** boy with blue shirt, sitting at a wooden desk, classroom, bright daylight, simple cartoon style.`;
+    const prompt = `Generate a very concise, comma-separated list of descriptive tags for this scene (subject, setting, lighting).`;
 
     const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
         model: 'gemini-3-pro-preview',
         contents: { parts: [imagePart, { text: prompt }]}
     }), undefined, signal);
 
-    return response.text.trim();
-}
-
-
-async function transcribeAudio(audioBase64: string, mimeType: string, signal?: AbortSignal): Promise<string> {
-    const ai = getAiClient();
-    const audioPart = { inlineData: { data: audioBase64, mimeType: mimeType } };
-    const prompt = `Transcribe the audio recording. Provide only the text of the speech. If there is no speech, return an empty string.`;
-
-    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-        model: 'gemini-3-pro-preview',
-        contents: { parts: [audioPart, { text: prompt }] },
-    }), undefined, signal);
-
-    return response.text.trim();
+    return response.text?.trim() || '';
 }
 
 export async function generatePromptFromAudio(audioBase64: string, mimeType: string, signal?: AbortSignal): Promise<string> {
-    return await transcribeAudio(audioBase64, mimeType, signal);
+    const ai = getAiClient();
+    const audioPart = { inlineData: { data: audioBase64, mimeType: mimeType } };
+    const prompt = `Transcribe the audio. Return only the text.`;
+
+    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+        model: 'gemini-2.5-flash', // Use Flash for reliable multimodal audio transcription
+        contents: { parts: [audioPart, { text: prompt }] },
+    }), undefined, signal);
+
+    return response.text?.trim() || '';
 }
 
-
-async function generatePromptsFromBase(
+export async function generatePromptsFromBase(
   basePrompt: string,
   sceneCount: number,
   genre: string,
+  characterStyle: string,
   characters: Character[],
   signal?: AbortSignal
 ): Promise<string[]> {
@@ -350,42 +367,19 @@ async function generatePromptsFromBase(
         ? `**Genre:** The story must be in the **${genre}** genre.` 
         : '';
     
-    let characterInstruction = '';
-    if (characters.length > 0) {
-        const characterDetails = characters
-            .filter(c => c.name && c.description)
-            .map(c => `  - ${c.name}: ${c.description}`)
-            .join('\n');
-        characterInstruction = `**Available Characters (CRITICAL INSTRUCTION):**
-You have access to a list of pre-defined characters. If the user's "Core Idea" mentions any of these characters by name, you MUST incorporate them into the story.
-When you describe these characters in the scene prompts, you MUST adhere strictly to their visual descriptions provided below.
-If a character is NOT mentioned by name in the "Core Idea", DO NOT include them in the story.
+    // Inject Character Consistency
+    const characterConsistency = getCharacterConsistencyBible(characters);
 
-**Character Details:**
-${characterDetails}
+    // CONDITIONAL PROMPT: Only add racial mandate if style is Afro-toon
+    const racialInstruction = characterStyle === 'Afro-toon' 
+        ? `For cultural context, ensure all human characters are of Black African descent.`
+        : '';
 
-**Implicit Characters:** If the user's "Core Idea" mentions other character names not listed above, you should also include them in the story. Generate a consistent appearance for them.`;
-    }
-
-    const racialInstruction = `For cultural context and consistency, please ensure all human characters in the story and scene descriptions are of Black African descent.`;
-
-    const prompt = `You are a creative assistant generating prompts for an image AI. Your primary goal is to create safe, clear, and visually descriptive scenes.
-
-    **Task:** Based on the user's core idea, create ${sceneCount} sequential scene descriptions.
-
+    const prompt = `Create ${sceneCount} sequential, safe, visually descriptive scene prompts based on this idea: "${basePrompt}".
     ${racialInstruction}
-
-    **Core Idea:** "${basePrompt}"
     ${genreInstruction}
-    ${characterInstruction}
-
-    **CRITICAL SAFETY & CLARITY RULES:**
-    1.  **Language:** Use simple, direct, and unambiguous language. Describe only what should be physically visible in the image.
-    2.  **Prohibited Content:** STRICTLY AVOID any mention, hint, or description of violence, weapons, conflict, aggression, political themes, social commentary, or any sensitive topics that could be misinterpreted by a safety filter.
-    3.  **Focus:** Concentrate on positive or neutral actions, settings, and character interactions.
-    4.  **Goal:** The final prompts must be 100% safe-for-work and family-friendly.
-
-    The output must be a JSON object containing an array of these safe, visual prompts.`;
+    ${characterConsistency}
+    Output JSON object with property "prompts" (array of strings).`;
     
     const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
         model: 'gemini-3-pro-preview',
@@ -395,47 +389,69 @@ ${characterDetails}
             responseSchema: {
                 type: Type.OBJECT,
                 properties: {
-                    prompts: {
-                        type: Type.ARRAY,
-                        description: `An array of ${sceneCount} unique and descriptive image prompts that form a coherent story, following all safety rules.`,
-                        items: {
-                            type: Type.STRING,
-                            description: 'A simple, safe, and detailed visual description for a single story scene.'
-                        }
-                    }
+                    prompts: { type: Type.ARRAY, items: { type: Type.STRING } }
                 },
                 required: ['prompts']
             }
         }
     }), undefined, signal);
     
-    try {
-        const jsonStr = response.text.trim();
-        const parsed = JSON.parse(jsonStr);
-
-        if (!parsed.prompts || !Array.isArray(parsed.prompts) || parsed.prompts.length === 0) {
-            throw new Error("AI failed to return a valid array of prompts.");
-        }
-        
-        return parsed.prompts;
-    } catch (e) {
-        console.error("Failed to parse prompts JSON from AI:", response.text, e);
-        throw new Error("The AI returned a response that was not valid JSON. Please try again.");
-    }
+    const jsonStr = response.text?.trim();
+    if (!jsonStr) throw new Error("No JSON response from model.");
+    const parsed = JSON.parse(jsonStr);
+    return parsed.prompts;
 }
 
-function isCartoonStyle(style: string): boolean {
-    const cartoonKeywords = ['cartoon', '2d flat', 'anime', 'pixel art', 'illustration', 'clip art', 'video game', 'pastel sketch'];
-    return cartoonKeywords.some(keyword => style.toLowerCase().includes(keyword));
+export async function editImage(params: EditImageParams): Promise<{ src: string | null; error: string | null }> {
+    const ai = getAiClient();
+    try {
+        const styleInstructions = getStyleInstructions(params.visualStyle);
+        const mentionedCharacters = params.characters.filter(c => params.editPrompt.toLowerCase().includes(c.name.toLowerCase()));
+        const consistencyText = mentionedCharacters.map(c => `MANDATORY APPEARANCE for ${c.name}: ${c.description || 'Standard appearance'}.`).join(' ');
+
+        const parts: Part[] = [
+             { inlineData: { data: params.imageBase64, mimeType: params.mimeType } },
+        ];
+
+         if (params.overlayImage) {
+            parts.push({ inlineData: { data: params.overlayImage.base64, mimeType: params.overlayImage.mimeType } });
+        }
+        if (params.referenceImage) {
+            parts.push({ inlineData: { data: params.referenceImage.base64, mimeType: params.referenceImage.mimeType } });
+        }
+
+        let promptText = `Edit this image. Instruction: ${params.editPrompt}. \nStyle: ${styleInstructions}.\n${consistencyText}`;
+        if (params.hasVisualMasks && params.overlayImage) {
+            promptText += " Use the provided mask image to constrain the edit.";
+        }
+        
+        parts.push({ text: promptText });
+
+        const modelToUse = params.imageModel || 'gemini-2.5-flash-image';
+        const config: any = { imageConfig: { aspectRatio: params.aspectRatio } };
+
+        const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+            model: modelToUse,
+            contents: { parts: parts },
+            config: config
+        }), undefined, params.signal);
+
+        for (const part of response.candidates?.[0]?.content?.parts || []) {
+            if (part.inlineData) return { src: part.inlineData.data || null, error: null };
+        }
+        return { src: null, error: 'No image returned.' };
+    } catch (error) {
+        return { src: null, error: parseErrorMessage(error) };
+    }
 }
 
 export async function generateSingleImage(
     prompt: string,
     aspectRatio: string,
-    imageStyle: string, // User selected style from UI
+    characterStyle: string, // 'Afro-toon' or 'General'
+    visualStyle: string,    // '3D Render', 'Realistic', etc.
     genre: string,
-    charactersForPrompt: Character[], // Characters for prompt content (descriptions) - now full Character array
-    allCharactersWithStyles: Character[], // Full character objects to access detectedImageStyle AND original image data
+    allCharactersWithStyles: Character[], 
     imageModel: string,
     referenceImageSrc?: string | null,
     referenceDescriptionOverride?: string | null,
@@ -444,107 +460,52 @@ export async function generateSingleImage(
     const ai = getAiClient();
     try {
         let referenceDescription = '';
-        if (referenceDescriptionOverride) {
-            referenceDescription = referenceDescriptionOverride;
-        } else if (referenceImageSrc) {
-            referenceDescription = await describeImageForConsistency(referenceImageSrc, signal);
-        }
+        if (referenceDescriptionOverride) referenceDescription = referenceDescriptionOverride;
+        else if (referenceImageSrc) referenceDescription = await describeImageForConsistency(referenceImageSrc, signal);
 
         const charactersWithVisualRef = allCharactersWithStyles.filter(
             c => c.name && c.originalImageBase64 && c.originalImageMimeType && prompt.toLowerCase().includes(c.name.toLowerCase())
         );
 
         let forceNanoBanana = charactersWithVisualRef.length > 0;
-        let characterIntegrityInstruction = '';
         const contentsParts: Part[] = [];
 
+        // STRICT CONSISTENCY INJECTION FOR TEXT-TO-IMAGE
+        // Even if we don't have a visual reference image (or if we do), we explicitely inject the description text.
+        // This ensures "Same clothes" logic persists even if the visual reference is weak or missing.
+        const mentionedCharacters = allCharactersWithStyles.filter(c => prompt.toLowerCase().includes(c.name.toLowerCase()));
+        const consistencyText = mentionedCharacters.map(c => {
+             return `MANDATORY APPEARANCE for ${c.name}: ${c.description || 'Standard appearance'}. Ensure they wear the same clothes described.`;
+        }).join(' ');
+
         if (charactersWithVisualRef.length > 0) {
-            const characterNames = charactersWithVisualRef.map(c => `'${c.name}'`).join(', ');
-
-            characterIntegrityInstruction = `You are an expert at high-fidelity character recreation. You have been given ${charactersWithVisualRef.length > 1 ? 'multiple' : 'a'} **Character Reference Image(s)**. Your task is to place this/these character(s) into a new scene.
-
-**CRITICAL RULES:**
-1.  **Absolute Character Integrity:** This is your highest priority. Each character in the output image MUST be a perfect visual match to their corresponding **Character Reference Image**. You MUST preserve their exact original design, appearance, clothing, and identity. Do NOT change their features or art style in any way.
-2.  **Seamless Scene Integration:** Place these exact characters into the scene based on the main "SCENE" prompt. You must adjust the characters' poses, positions, and lighting to make them fit naturally within the new environment, but their core appearance and clothing MUST remain unchanged.
-3.  **Identify Correctly:** The reference images provided correspond to the character(s): ${characterNames}. The order of images matches this list.
-4.  **Final Style:** The final, composite image MUST be rendered in a '${imageStyle}' style.
----
-`;
-            
+            const names = charactersWithVisualRef.map(c => c.name).join(', ');
+            const integrity = `You are recreating specific characters (${names}). Preserve their exact appearance from the reference images. Place them in the new scene. Style: ${visualStyle}.`;
+            contentsParts.push({ text: integrity });
             charactersWithVisualRef.forEach(char => {
-                contentsParts.push({
-                    inlineData: {
-                        data: char.originalImageBase64!,
-                        mimeType: char.originalImageMimeType!
-                    }
-                });
+                contentsParts.push({ inlineData: { data: char.originalImageBase64!, mimeType: char.originalImageMimeType! } });
             });
         }
         
-        const charactersForTextBlock = allCharactersWithStyles.filter(
-            c => c.name && c.description && prompt.toLowerCase().includes(c.name.toLowerCase()) && !charactersWithVisualRef.some(ci => ci.id === c.id)
-        );
-
-        let finalCharacterBlock = '';
-        if (charactersForTextBlock.length > 0) {
-            const characterDescriptions = charactersForTextBlock.map(c => `- **${c.name}**: ${c.description}`).join('\n');
-            finalCharacterBlock = `---
-**DEFINED CHARACTERS (CRITICAL & ABSOLUTE REQUIREMENT):**
-The generated image features one or more characters. For any character whose name is listed below, it is absolutely essential that you generate a high-fidelity visual representation based on their provided description.
-
-**GENDER & IDENTITY:** Pay extremely close attention to the specified gender. If the description says "woman", you MUST generate a woman. If it says "man", you MUST generate a man. This is a non-negotiable instruction. Any deviation from the specified gender is a complete failure.
-
-**PHYSICAL FEATURES:** Adhere strictly to all other specified features like age, ethnicity, hair, and eye color.
-
-**List of Defined Characters:**
-${characterDescriptions}
-
-**For any other characters mentioned in the SCENE prompt but not listed above, create a visually appropriate appearance for them.**
----
-`;
-        }
+        const genreInstruction = genre && genre.toLowerCase() !== 'general' 
+            ? `**Genre:** The story must be in the **${genre}** genre.` 
+            : '';
+        const styleInstructions = getStyleInstructions(visualStyle);
+        const visualReferencePreamble = referenceDescription ? `\nConsistency: Scene must match this: ${referenceDescription}` : '';
         
-        // Use detailed style instructions
-        const styleInstructions = getStyleInstructions(imageStyle);
-        
-        const genreInstruction = genre && genre.toLowerCase() !== 'general' ? genre : '';
-        
-        const visualReferencePreamble = referenceDescription
-            ? `\n---
-**VISUAL CONSISTENCY MANDATE:**
-The entire scene (character, background, lighting, and atmosphere) must be visually consistent with the following detailed description. Recreate this scene exactly, but from the new perspective requested in the SCENE section.
-**Reference Scene Description:**
-${referenceDescription}
----
-`
+        // CONDITIONAL PROMPT
+        const racialMandate = characterStyle === 'Afro-toon' 
+            ? `\n**Cultural Context:** Ensure human characters are of Black African descent.`
             : '';
         
-        const racialMandate = `---
-**Cultural Context:**
-For consistency with the story's setting, please ensure that all human characters depicted are of Black African descent.
----
-`;
-        
-        const isGenerateContentModel = ['gemini-2.5-flash-image', 'gemini-3-pro-image-preview'].includes(imageModel) || forceNanoBanana;
-        const isImagenFamily = imageModel === 'imagen-4.0-generate-001';
-        const aspectRatioInstruction = isGenerateContentModel ? `\n**ASPECT RATIO (CRITICAL):** The image must be generated in a ${aspectRatio} aspect ratio.` : '';
-
-        let baseTextPrompt = `${characterIntegrityInstruction}${racialMandate}${finalCharacterBlock}${visualReferencePreamble}\n**SCENE:** "${prompt}"\n**IMAGE_STYLE_GUIDE:** ${styleInstructions}${aspectRatioInstruction}`;
-        if (genreInstruction) {
-             baseTextPrompt += `\n**GENRE:** ${genreInstruction}`;
-        }
+        const baseTextPrompt = `${racialMandate}${visualReferencePreamble}\n**SCENE:** "${prompt}"\n**STYLE:** ${styleInstructions}\n${consistencyText}\n${genreInstruction}`;
         contentsParts.push({ text: baseTextPrompt });
         
-        if (isGenerateContentModel) {
-            const modelToUse = forceNanoBanana ? 'gemini-2.5-flash-image' : imageModel;
-            const config: any = {};
-            if (modelToUse === 'gemini-2.5-flash-image' || modelToUse === 'gemini-3-pro-image-preview') {
-                 config.imageConfig = { aspectRatio: aspectRatio };
-            }
-            if (modelToUse === 'gemini-3-pro-image-preview') {
-                config.tools = [{google_search: {}}];
-            }
-
+        const modelToUse = (forceNanoBanana && imageModel === 'gemini-2.5-flash-image') ? 'gemini-2.5-flash-image' : imageModel;
+        
+        if (modelToUse.includes('gemini')) {
+             const config: any = { imageConfig: { aspectRatio: aspectRatio } };
+             if (modelToUse === 'gemini-3-pro-image-preview') config.tools = [{google_search: {}}];
 
             const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
                 model: modelToUse,
@@ -553,760 +514,259 @@ For consistency with the story's setting, please ensure that all human character
             }), undefined, signal);
 
             for (const part of response.candidates?.[0]?.content?.parts || []) {
-                if (part.inlineData) {
-                    return { src: part.inlineData.data, error: null };
-                }
+                if (part.inlineData) return { src: part.inlineData.data || null, error: null };
             }
-            console.warn(`Image generation call was successful but returned no image. Full response:`, response);
-            return { src: null, error: 'The model returned a success status but no image data. This may be due to a safety filter or an issue with the complexity of the prompt. Please try a different prompt.' };
-        }
-
-        if (isImagenFamily) {
-            const textForImagen = contentsParts.map(part => (part as {text: string}).text || '').join('\n');
-    
-            const response: any = await withRetry(() => ai.models.generateImages({
+            return { src: null, error: 'No image returned.' };
+        } else {
+             // Imagen fallback (simplified)
+             const textPrompt = contentsParts.map(p => (p as any).text).join(' ');
+             const response: any = await withRetry(() => ai.models.generateImages({
                 model: imageModel,
-                prompt: textForImagen,
-                config: {
-                    numberOfImages: 1,
-                    aspectRatio: aspectRatio,
-                    outputMimeType: 'image/png',
-                },
+                prompt: textPrompt,
+                config: { numberOfImages: 1, aspectRatio: aspectRatio, outputMimeType: 'image/png' },
             }), undefined, signal);
-    
-            if (response && response.generatedImages && response.generatedImages.length > 0 && response.generatedImages[0].image?.imageBytes) {
-                return { src: response.generatedImages[0].image.imageBytes, error: null };
-            } else {
-                console.warn(`Image call was successful but returned no image. Full response:`, response);
-                return { src: null, error: 'The model returned a success status but no image data. This may be due to a safety filter or an issue with the complexity of the prompt. Please try a different prompt.' };
-            }
+            if (response?.generatedImages?.[0]?.image?.imageBytes) return { src: response.generatedImages[0].image.imageBytes, error: null };
+            return { src: null, error: 'No image returned.' };
         }
-        
-        // Fallback or error if no model matched
-        return { src: null, error: `Unsupported image model selected: ${imageModel}` };
     } catch (error) {
-        const parsedError = parseErrorMessage(error);
-        // If aborted, we might want to return null error or specific error, but parseErrorMessage handles 'aborted' check
-        if (signal?.aborted) {
-             throw error; // Re-throw abort to stop upper loops
-        }
-        console.error(`Image could not be generated and will be skipped:`, parsedError);
-        return { src: null, error: parsedError };
+        return { src: null, error: parseErrorMessage(error) };
     }
 }
 
-
-async function generateImagesFromPrompts(
-  prompts: string[],
-  aspectRatio: string,
-  imageStyle: string,
-  genre: string,
-  charactersForPrompt: Character[], // For prompt content - now full Character array
-  allCharactersWithStyles: Character[], // Full character objects to access detectedImageStyle
-  imageModel: string,
-  onProgress: (message: string) => void,
-  signal?: AbortSignal
-): Promise<StoryboardScene[]> {
-    const scenes: StoryboardScene[] = [];
-    
-    for (let i = 0; i < prompts.length; i++) {
-        if (signal?.aborted) throw new Error("Aborted");
-
-        const remaining = prompts.length - i;
-        const loadingMessage = remaining > 1 ? `Generating... ${remaining} remaining` : `Generating scene...`;
-        onProgress(loadingMessage);
-        
-        const { src, error } = await generateSingleImage(prompts[i], aspectRatio, imageStyle, genre, charactersForPrompt, allCharactersWithStyles, imageModel, null, null, signal);
-        scenes.push({ prompt: prompts[i], src, error });
-
-        if (i < prompts.length - 1) {
-            onProgress(`Pausing to avoid rate limits...`);
-            await delay(15000);
-        }
-    }
-  
-  return scenes;
-}
-
-
-export async function generateImageSet(
-  promptText: string,
-  imageCount: number,
-  aspectRatio: string,
-  imageStyle: string,
-  genre: string,
-  charactersForPrompt: Character[], // Characters for prompt content - now full Character array
-  allCharactersWithStyles: Character[], // Full characters array to pass to generateImagesFromPrompts
-  imageModel: string,
-  onProgress: (message: string) => void,
-  signal?: AbortSignal
-): Promise<GenerationResult> {
-  
-  try {
-    // If only 1 scene is requested, use the prompt directly without expanding it.
-    // This supports the "Generate this Scene" workflow from the Storybook.
-    if (imageCount === 1) {
-        const storyboard = await generateImagesFromPrompts([promptText], aspectRatio, imageStyle, genre, charactersForPrompt, allCharactersWithStyles, imageModel, onProgress, signal);
-        return { storyboard };
-    }
-
-    // Otherwise, use the "creative expansion" logic to generate multiple scene prompts.
-    onProgress("Breaking down the story into scenes...");
-    const scenePrompts = await generatePromptsFromBase(promptText, imageCount, genre, charactersForPrompt, signal);
-    const storyboard = await generateImagesFromPrompts(scenePrompts, aspectRatio, imageStyle, genre, charactersForPrompt, allCharactersWithStyles, imageModel, onProgress, signal);
-    return { storyboard };
-  } catch (error) {
-    console.error("Error calling Gemini API:", error);
-    if (error instanceof Error) {
-        throw new Error(parseErrorMessage(error));
-    }
-    throw new Error("An unknown error occurred during image set generation.");
-  }
-}
-
-async function analyzeEnvironmentForCameraPlacement(
-    imageBase64: string,
-    angles: string[],
-    focusSubject: string,
-    signal?: AbortSignal
-): Promise<Record<string, string>> {
-    const ai = getAiClient();
-    const imagePart = { inlineData: { data: imageBase64, mimeType: 'image/png' } };
-
-    const focusInstruction = focusSubject === 'General Scene'
-        ? 'Your task is to determine the most natural camera positions to achieve specific views of the main subject.'
-        : `Your task is to determine the most natural camera positions to achieve specific views where the camera is focused on the character named '${focusSubject}'. The framing should prioritize this character.`;
-
-    const prompt = `You are a virtual cinematographer analyzing a scene to find the best camera placements. Analyze the provided image. ${focusInstruction}
-
-    **Analysis Steps:**
-    1.  **Identify Subject & Orientation:** Locate the main character(s) and note the direction they are facing. If a specific focus subject is named, prioritize them.
-    2.  **Describe Environment:** Briefly map out the key objects and walls around the subject.
-    3.  **Determine Placements:** Based on the environment, describe the most logical and physically possible camera placements to achieve the requested views: ${angles.join(', ')}. The camera cannot be placed inside solid objects.
-
-    **CRITICAL RULE: Scene Integrity**
-    When describing the new camera perspective, you MUST instruct the AI to ONLY move the camera. The position, orientation, and pose of ALL scene elements (characters, furniture, vehicles, buildings, environment, etc.) must remain absolutely unchanged. The scene must be identical, just viewed from a different angle.
-
-    **Output Format:**
-    Your response MUST be a valid JSON object. For each requested angle (e.g., "back"), create a key named '<angle>_view_prompt' (e.g., "back_view_prompt"). The value for each key must be a concise instruction for an image generation AI that strictly adheres to the "Scene Integrity" rule.`;
-
-    const properties: { [key: string]: { type: Type, description: string } } = {};
-    const required: string[] = [];
-    angles.forEach(angle => {
-        const key = `${angle}_view_prompt`;
-        properties[key] = {
-            type: Type.STRING,
-            description: `The detailed prompt for generating the ${angle} view.`
-        };
-        required.push(key);
-    });
-
-    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-        model: 'gemini-3-pro-preview', // Using Pro for better spatial reasoning
-        contents: { parts: [imagePart, { text: prompt }] },
-        config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.OBJECT,
-                properties,
-                required,
-            }
-        }
-    }), undefined, signal);
-
-    try {
-        const jsonStr = response.text.trim();
-        return JSON.parse(jsonStr);
-    } catch (e) {
-        console.error("Failed to parse camera placement analysis JSON:", response.text, e);
-        throw new Error("AI failed to return a valid camera placement plan.");
-    }
-}
-
-export async function generateCameraAnglesFromImage(
-    referenceScene: StoryboardScene,
-    generationInfo: {
-      aspectRatio: string;
-      imageStyle: string;
-      genre: string;
-      characters: Character[];
-      imageModel: string;
-    },
-    angleNames: string[],
-    focusSubject: string,
-    onProgress: (message: string) => void,
-    signal?: AbortSignal
-  ): Promise<StoryboardScene[]> {
-    if (!referenceScene.src) {
-      throw new Error("Reference scene is missing image source.");
-    }
-  
-    onProgress(`Extending original image...`);
-    const outpaintPrompt = "Perform 'outpainting' on this image. Extend the image on all sides to reveal more of the surrounding environment. Fill in the new areas naturally, seamlessly blending with the existing content, style, and lighting. Do not alter any of the original pixels. The goal is to create a wider, more complete view of the scene.";
-
-    const { src: extendedImageSrc, error: extensionError } = await editImage({
-        imageBase64: referenceScene.src,
-        mimeType: 'image/png',
-        editPrompt: outpaintPrompt,
-        ...generationInfo,
-        signal,
-        imageModel: 'gemini-2.5-flash-image',
-    });
-
-    if (extensionError || !extendedImageSrc) {
-        console.error("Failed to extend image for camera angle generation:", extensionError);
-        throw new Error(`Could not extend the base image: ${extensionError || 'Unknown error'}`);
-    }
-
-    onProgress(`Analyzing extended environment...`);
-    let cameraPrompts: Record<string, string> = {};
-
-    if (angleNames.length > 0) {
-        cameraPrompts = await analyzeEnvironmentForCameraPlacement(extendedImageSrc, angleNames, focusSubject, signal);
-    }
-
-    const generatedScenes: StoryboardScene[] = [];
-
-    for (let i = 0; i < angleNames.length; i++) {
-        if (signal?.aborted) throw new Error("Aborted");
-        const angle = angleNames[i];
-        
-        // Ensure angleDisplayName is available early for error handling
-        const angleDisplayName = CAMERA_ANGLE_OPTIONS.find(opt => opt.key === angle)?.name || angle;
-
-        const anglePromptKey = `${angle}_view_prompt`;
-        const finalEditPrompt = cameraPrompts[anglePromptKey];
-
-        if (!finalEditPrompt) {
-            console.warn(`No camera prompt generated for angle: ${angle}`);
-            generatedScenes.push({ 
-                prompt: `Failed to generate prompt for ${angle} view`, 
-                src: null, 
-                error: `AI analysis did not provide a prompt for the ${angle} view.`,
-                angleName: angleDisplayName // Ensure error scenes also carry the name
-            });
-            continue;
-        }
-
-        onProgress(`Generating '${angleDisplayName}'... (${i + 1}/${angleNames.length})`);
-        
-        const { src: newImageSrc, error: newError } = await editImage({
-          imageBase64: extendedImageSrc, 
-          mimeType: 'image/png',
-          editPrompt: finalEditPrompt,
-          ...generationInfo,
-          signal,
-          imageModel: 'gemini-2.5-flash-image',
-        });
-
-        generatedScenes.push({ prompt: finalEditPrompt, src: newImageSrc, error: newError, angleName: angleDisplayName });
-
-        if (i < angleNames.length - 1) {
-          onProgress(`Pausing before next angle...`);
-          await delay(15000);
-        }
-    }
-    return generatedScenes;
-}
-
-export async function editImage(params: EditImageParams): Promise<{ src: string | null; error: string | null }> {
-    const { imageBase64, mimeType, editPrompt, aspectRatio, imageStyle, genre, characters, hasVisualMasks, signal, imageModel, overlayImage } = params;
-    const ai = getAiClient();
-    
-    const styleInstructions = getStyleInstructions(imageStyle);
-
-    try {
-        const contentsParts: Part[] = [];
-
-        const imageToEditPart = { inlineData: { data: imageBase64, mimeType } };
-        contentsParts.push(imageToEditPart);
-
-        if (overlayImage) {
-            const overlayImagePart = { inlineData: { data: overlayImage.base64, mimeType: overlayImage.mimeType } };
-            contentsParts.push(overlayImagePart);
-        }
-
-        const charactersWithVisualRef = characters.filter(
-             c => c.originalImageBase64 && c.originalImageMimeType && editPrompt.toLowerCase().includes(c.name.toLowerCase())
-        );
-
-        let finalPromptText = "";
-
-        if (overlayImage) {
-            finalPromptText = `You are an expert AI image composition editor. You have been given two images: a main "SCENE" image and an "OBJECT" image to composite into it.
-            
-**COMPOSITION INSTRUCTIONS (CRITICAL):**
-1.  **Place Object:** Seamlessly integrate the "OBJECT" image into the "SCENE" image based on the "USER PROMPT" below.
-2.  **Blend Naturally:** You MUST adjust the lighting, perspective, scale, and style of the "OBJECT" image to make it look like it was originally part of the "SCENE" image.
-3.  **Scene Integrity:** Do NOT change the "SCENE" image except where the "OBJECT" image is placed.
-4.  **Masking:** If GREEN MASK areas are present in the "SCENE" image, you MUST place the "OBJECT" image within those green areas.
-5.  **Cleanup:** The final output image MUST NOT contain any red or green overlay colors.
-
-**USER PROMPT:** "${editPrompt}"
-`;
-        } else if (hasVisualMasks) {
-            finalPromptText = `You are an expert AI image editor. The provided image contains semi-transparent colored masks indicating specific edit operations.
-            
-**VISUAL EDITING INSTRUCTIONS (CRITICAL):**
-1.  **RED MASK AREAS:** Areas highlighted in RED must be REMOVED/ERASED. Fill these areas naturally with the surrounding background or scene elements (inpainting).
-2.  **GREEN MASK AREAS:** Areas highlighted in GREEN are target areas for content generation. Apply the "USER PROMPT" below to these specific areas.
-3.  **CLEANUP:** The final output image MUST NOT contain any red or green overlay colors. It must look like a natural, finished image.
-
-**USER PROMPT:** "${editPrompt}"
-`;
-        } else {
-            finalPromptText = `You are an expert AI image editor. Your task is to modify the provided image based on the user's instructions.
-**EDIT INSTRUCTION:** "${editPrompt}"
-`;
-        }
-
-        if (charactersWithVisualRef.length > 0) {
-            charactersWithVisualRef.forEach(c => {
-                 contentsParts.push({ inlineData: { data: c.originalImageBase64!, mimeType: c.originalImageMimeType! } });
-            });
-            
-            finalPromptText += `
-**CHARACTER CONSISTENCY RULES:**
-1.  **Enforce Character Consistency:** The character(s) mentioned in the prompt (${charactersWithVisualRef.map(c => c.name).join(', ')}) MUST be visually matched to the provided **Character Reference Image(s)**. Preserve their exact appearance, clothing, and identity. This is your highest priority.
-2.  **Maintain Style & Scene:** Preserve the overall art style, lighting, and background elements of the original "Scene Image" unless the edit instruction specifically asks to change them. The final style must be: "${styleInstructions}".
-3.  **Maintain Aspect Ratio:** The output image must have the same aspect ratio: ${aspectRatio}.
-`;
-            if (hasVisualMasks || overlayImage) {
-                finalPromptText += `
-4.  **CHARACTER/OBJECT PLACEMENT (GREEN MASK):** If "GREEN MASK AREAS" are present, you MUST generate the character(s) or composite the "OBJECT" image INSIDE the green masked area. Ensure it is scaled and positioned correctly to fit within that specific masked region.
-`;
-            }
-
-        } else {
-             finalPromptText += `
-**CRITICAL RULES:**
-1.  **Preserve Identity:** You MUST preserve the core identity, features, and style of the original image and any characters within it. Only apply the specific change requested.
-2.  **Maintain Style:** The edited image's art style must perfectly match the original. The style is: "${styleInstructions}".
-3.  **Maintain Aspect Ratio:** The output image must have the same aspect ratio as the input: ${aspectRatio}.
-`;
-        }
-
-        const racialMandate = `---
-**Cultural Context:**
-For consistency, please ensure that any human characters depicted are of Black African descent.
----
-`;
-        
-        const otherCharacters = characters.filter(c => !charactersWithVisualRef.some(ref => ref.id === c.id) && c.name && c.description);
-        const otherCharacterBlock = otherCharacters.length > 0 ? `---
-**OTHER CHARACTERS:**
-The edited image must also maintain the appearance of these other characters based on their text descriptions if they appear in the scene:
-${otherCharacters.map(c => `- **${c.name}**: ${c.description}`).join('\n')}
----
-` : '';
-
-        finalPromptText += `\n${racialMandate}\n${otherCharacterBlock}`;
-        contentsParts.push({ text: finalPromptText });
-
-        const modelToUse = 'gemini-2.5-flash-image';
-
-        const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-            model: modelToUse,
-            contents: { parts: contentsParts },
-            config: {
-                imageConfig: { aspectRatio: aspectRatio },
-            },
-        }), undefined, signal);
-
-        for (const part of response.candidates?.[0]?.content?.parts || []) {
-            if (part.inlineData) {
-                return { src: part.inlineData.data, error: null };
-            }
-        }
-        
-        return { src: null, error: 'The model did not return an edited image. The edit may have been rejected by a safety filter.' };
-
-    } catch (error) {
-        const parsedError = parseErrorMessage(error);
-        if (signal?.aborted) throw error;
-        console.error(`Image could not be edited:`, parsedError);
-        return { src: null, error: parsedError };
-    }
-}
-
-
-async function generateSpeech(
-    script: string,
-    characters: Character[],
-    imageStyle: string,
-    signal?: AbortSignal
-): Promise<string | null> {
-    const ai = getAiClient();
-    if (!script) return null;
-
-    const knownCharacters = characters.filter(c => c.name).map(c => c.name);
-    const allPossibleSpeakers = ['Narrator', ...knownCharacters];
-    
-    const speakerMatches = Array.from(script.matchAll(/^([\w\s]+):/gm));
-    const detectedSpeakers = new Set<string>();
-
-    speakerMatches.forEach(match => {
-        const speakerName = match[1].trim();
-        const foundSpeaker = allPossibleSpeakers.find(s => s.toLowerCase() === speakerName.toLowerCase());
-        if (foundSpeaker) {
-            detectedSpeakers.add(foundSpeaker);
-        }
-    });
-
-    try {
-        let ttsResponse: GenerateContentResponse;
-        if (detectedSpeakers.size > 1) {
-            const availableVoices = ['Kore', 'Puck', 'Zephyr', 'Charon', 'Fenrir'];
-            const speakerVoiceConfigs = Array.from(detectedSpeakers).map((name, index) => ({
-                speaker: name,
-                voiceConfig: {
-                    prebuiltVoiceConfig: { voiceName: availableVoices[index % availableVoices.length] as any }
-                }
-            }));
-
-            const ttsPrompt = `TTS the following conversation:\n${script}`;
-            
-            ttsResponse = await withRetry(() => ai.models.generateContent({
-                model: "gemini-2.5-flash-preview-tts",
-                contents: [{ parts: [{ text: ttsPrompt }] }],
-                config: {
-                    responseModalities: [Modality.AUDIO],
-                    speechConfig: {
-                        multiSpeakerVoiceConfig: {
-                            speakerVoiceConfigs: speakerVoiceConfigs,
-                        },
-                    },
-                },
-            }), undefined, signal);
-
-        } else {
-            // Single speaker or narrator
-            const expression = isCartoonStyle(imageStyle) ? 'cheerful' : 'storytelling';
-            const ttsPrompt = `(${expression}): ${script}`;
-
-            ttsResponse = await withRetry(() => ai.models.generateContent({
-                model: "gemini-2.5-flash-preview-tts",
-                contents: [{ parts: [{ text: ttsPrompt }] }],
-                config: {
-                    responseModalities: [Modality.AUDIO],
-                    speechConfig: {
-                        voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: 'Kore' }, // Default voice for single speaker
-                        },
-                    },
-                },
-            }), undefined, signal);
-        }
-
-        const audioPart = ttsResponse.candidates?.[0]?.content?.parts?.[0];
-        if (audioPart && audioPart.inlineData) {
-            return audioPart.inlineData.data;
-        }
-
-        return null;
-
-    } catch (error) {
-        console.error("Error generating speech:", error);
-        throw error;
-    }
-}
-// FIX: Added missing functions generateStructuredStory, generateScenesFromNarrative, generateStorybookSpeech, and generateVideoFromScene.
 export async function generateStructuredStory(
     prompt: string,
     title: string,
-    characterNames: string[],
+    characters: Character[], // CHANGED: Accepts full Character objects
     wantsDialogue: boolean,
+    characterStyle: string,
+    genre: string = 'General',
+    movieStyle: string = 'Hollywood',
     signal?: AbortSignal
 ): Promise<StorybookParts> {
     const ai = getAiClient();
-    const dialogueInstruction = wantsDialogue ? "The story should include dialogue between characters." : "The story should be purely narrative without dialogue.";
-    const titleInstruction = title ? `The story should have the title "${title}".` : "";
-    const characterInstruction = characterNames.length > 0 ? `The story should feature these characters: ${characterNames.join(', ')}.` : "";
+    
+    // ENFORCE NIGERIAN PIDGIN/ACCENT IF AFRO-TOON
+    const accentInstruction = characterStyle === 'Afro-toon' 
+        ? "**IMPORTANT: Write all dialogue and narration in authentic Nigerian Pidgin English or Nigerian-accented English to match the African tone.**"
+        : "";
 
-    const systemPrompt = `You are a creative storyteller for all ages. Your task is to write a short story based on a user's prompt and then break it down into scenes.
+    const dialogueInstruction = wantsDialogue ? "Include dialogue in the script where appropriate." : "Write a purely narrative script, no dialogue.";
+    
+    // GET MOVIE STYLE INSTRUCTIONS
+    const movieStyleInstruction = getMovieStyleInstructions(movieStyle);
 
-**CRITICAL RULES:**
-1.  **Format:** Your output MUST be a valid JSON object.
-2.  **Story Narrative:** Write a compelling, family-friendly narrative.
-3.  **Scenes:** After the narrative, create an array of scenes. Each scene must have:
-    *   \`imageDescription\`: A concise, visual description of the scene for an AI image generator. Focus on what is seen, not what is felt.
-    *   \`narration\`: The corresponding text from the story for that scene, including any dialogue.
-4.  **Safety:** The story and descriptions must be 100% safe-for-work and free of any violence, conflict, or sensitive topics.
-5.  **Cohesion:** The scenes must logically follow the narrative.
-`;
+    // INJECT CONSISTENCY BIBLE
+    const consistencyBible = getCharacterConsistencyBible(characters);
+    const characterNames = characters.map(c => c.name).join(', ');
 
-    const userPrompt = `
-**User's Idea:** "${prompt}"
-${titleInstruction}
-${characterInstruction}
-${dialogueInstruction}
-`;
+    const userPrompt = `Write a story based on: "${prompt}". Title: ${title}. Characters: ${characterNames}. 
+    Genre: ${genre}.
+    ${movieStyleInstruction}
+    ${dialogueInstruction}
+    ${accentInstruction}
+    
+    ${consistencyBible}
 
-    const response = await withRetry(() => ai.models.generateContent({
+    **ENVIRONMENT CONSISTENCY RULE:**
+    Establish a consistent location visual (setting, lighting, atmosphere) in the first scene and reuse those visual tags in subsequent scenes if the location hasn't changed.
+    
+    Structure the response as a JSON object with the following schema:
+    {
+      "storyNarrative": "Full story text...",
+      "scenes": [
+        {
+          "imageDescription": "Visual description for image generation. MUST include the EXACT clothing and physical details from the Character Consistency Bible for any character present.",
+          "script": "Combined narration and dialogue for this scene. Format dialogue as 'Character Name: Speech'."
+        }
+      ]
+    }`;
+
+    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
         model: 'gemini-3-pro-preview',
         contents: [{ text: userPrompt }],
-        config: {
-            systemInstruction: systemPrompt,
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                    storyNarrative: {
-                        type: Type.STRING,
-                        description: "The complete, well-written story narrative."
-                    },
-                    scenes: {
-                        type: Type.ARRAY,
-                        description: "An array of scenes that break down the story.",
-                        items: {
-                            type: Type.OBJECT,
-                            properties: {
-                                imageDescription: {
-                                    type: Type.STRING,
-                                    description: "A visual prompt for an AI to generate the scene's image."
-                                },
-                                narration: {
-                                    type: Type.STRING,
-                                    description: "The part of the story narrative corresponding to this scene."
-                                }
-                            },
-                            required: ["imageDescription", "narration"]
-                        }
-                    }
-                },
-                required: ["storyNarrative", "scenes"]
-            }
-        }
+        config: { responseMimeType: "application/json" }
     }), undefined, signal);
 
-    try {
-        const jsonStr = response.text.trim();
-        const parsed = JSON.parse(jsonStr);
-        if (!parsed.storyNarrative || !parsed.scenes) {
-            throw new Error("AI response was missing required story parts.");
-        }
-        return parsed as StorybookParts;
-    } catch (e) {
-        console.error("Failed to parse structured story from AI:", response.text, e);
-        throw new Error("The AI returned an invalid format for the story. Please try again.");
-    }
+    const jsonStr = response.text?.trim();
+    if (!jsonStr) throw new Error("No JSON response from model.");
+    return JSON.parse(jsonStr);
 }
 
 export async function generateScenesFromNarrative(
     narrative: string,
-    characterNames: string[],
+    characters: Character[], // CHANGED: Accepts full Character objects
     wantsDialogue: boolean,
+    characterStyle: string,
+    movieStyle: string = 'General',
     signal?: AbortSignal
 ): Promise<StoryboardSceneData[]> {
     const ai = getAiClient();
+    
+    // ENFORCE NIGERIAN PIDGIN/ACCENT IF AFRO-TOON
+    const accentInstruction = characterStyle === 'Afro-toon'
+        ? "If dialogue is requested, ensure it uses authentic Nigerian Pidgin English."
+        : "";
 
-    const dialogueInstruction = wantsDialogue ? "Pay close attention to lines of dialogue and assign them to the correct scenes." : "Focus only on the narrative action and descriptions.";
-    const characterInstruction = characterNames.length > 0 ? `The key characters in this story are: ${characterNames.join(', ')}. When describing scenes, refer to them by these names.` : "";
+    const dialogueInstruction = wantsDialogue 
+        ? "Enhance the story by adding dialogue where appropriate." 
+        : "STRICT MODE: The user has provided their own story. Do NOT rewrite, summarize, or alter the narrative text in the 'script' field. You must use the provided text verbatim, splitting it into scenes if necessary. Your PRIMARY task is to generate the 'imageDescription' for visualization.";
+    
+    const movieStyleInstruction = getMovieStyleInstructions(movieStyle);
 
-    const systemPrompt = `You are a film script analyst. Your job is to read a story narrative and break it down into logical, sequential scenes.
+    // INJECT CONSISTENCY BIBLE
+    const consistencyBible = getCharacterConsistencyBible(characters);
+    const characterNames = characters.map(c => c.name).join(', ');
 
-**CRITICAL RULES:**
-1.  **Format:** Your output MUST be a valid JSON array of scene objects.
-2.  **Scene Object:** Each scene object must contain:
-    *   \`imageDescription\`: A concise, visual description of the scene for an AI image generator. Describe the setting, characters, and key action.
-    *   \`narration\`: The exact portion of the original narrative that corresponds to this scene.
-3.  **Completeness:** You must process the entire narrative, ensuring every part is assigned to a scene.
-4.  **Safety:** All image descriptions must be 100% safe-for-work. Avoid any descriptions that could be misinterpreted by safety filters.
-`;
+    const userPrompt = `Analyze the following story and break it into visual scenes. 
+    Story: "${narrative}". 
+    Characters: ${characterNames}. 
+    ${movieStyleInstruction}
+    ${dialogueInstruction}
+    ${accentInstruction}
+    
+    ${consistencyBible}
 
-    const userPrompt = `
-**Story to Analyze:**
----
-${narrative}
----
+    **ENVIRONMENT CONSISTENCY RULE:**
+    Establish a consistent location visual (setting, lighting, atmosphere) in the first scene and reuse those visual tags in subsequent scenes if the location hasn't changed.
 
-**Instructions:**
-Break the story above into scenes. ${characterInstruction} ${dialogueInstruction}
-`;
-    const response = await withRetry(() => ai.models.generateContent({
+    Return JSON array of objects:
+    [
+      {
+        "imageDescription": "Visual description of the scene. MUST include the EXACT clothing and physical details from the Character Consistency Bible for any character present.",
+        "script": "The narrative text for this scene."
+      }
+    ]`;
+
+    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
         model: 'gemini-3-pro-preview',
         contents: [{ text: userPrompt }],
-        config: {
-            systemInstruction: systemPrompt,
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.ARRAY,
-                description: "An array of scenes that break down the story.",
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        imageDescription: {
-                            type: Type.STRING,
-                            description: "A visual prompt for an AI to generate the scene's image."
-                        },
-                        narration: {
-                            type: Type.STRING,
-                            description: "The part of the story narrative corresponding to this scene."
-                        }
-                    },
-                    required: ["imageDescription", "narration"]
-                }
-            }
-        }
+        config: { responseMimeType: "application/json" }
     }), undefined, signal);
 
-    try {
-        const jsonStr = response.text.trim();
-        const parsed = JSON.parse(jsonStr);
-        if (!Array.isArray(parsed)) {
-            throw new Error("AI response was not a valid array.");
-        }
-        return parsed as StoryboardSceneData[];
-    } catch (e) {
-        console.error("Failed to parse scenes from narrative:", response.text, e);
-        throw new Error("The AI returned an invalid format for the scenes. Please try again.");
-    }
+    const jsonStr = response.text?.trim();
+    if (!jsonStr) throw new Error("No JSON response from model.");
+    return JSON.parse(jsonStr);
 }
 
-export async function generateStorybookSpeech(
-    text: string,
-    voice: string,
-    expression: string,
-    accent?: string,
+export async function regenerateSceneVisual(
+    script: string,
+    characters: Character[],
     signal?: AbortSignal
-): Promise<string | null> {
+): Promise<string> {
     const ai = getAiClient();
-    if (!text) return null;
+    // Use consistency bible here too if full chars provided
+    const consistencyBible = getCharacterConsistencyBible(characters);
+    const characterNames = characters.map(c => c.name).join(', ');
 
-    // Use expression and accent in the prompt for TTS
-    const accentInstruction = (accent && accent !== 'Global (Neutral)') ? ` The accent should be ${accent}.` : '';
-    const ttsPrompt = `(${expression}${accentInstruction}): ${text}`;
+    const prompt = `Based on the following script line, generate a new, creative, detailed visual description for an AI image generator.
+    Script: "${script}"
+    Characters available: ${characterNames}
+    
+    ${consistencyBible}
+    
+    Output ONLY the visual description string (subject, setting, action, lighting, style keywords).`;
 
-    try {
-        const ttsResponse = await withRetry(() => ai.models.generateContent({
-            model: "gemini-2.5-flash-preview-tts",
-            contents: [{ parts: [{ text: ttsPrompt }] }],
-            config: {
-                responseModalities: [Modality.AUDIO],
-                speechConfig: {
-                    voiceConfig: {
-                        prebuiltVoiceConfig: { voiceName: voice as any },
-                    },
-                },
-            },
-        }), undefined, signal);
+    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+        model: 'gemini-3-pro-preview',
+        contents: [{ text: prompt }]
+    }), undefined, signal);
 
-        const audioPart = ttsResponse.candidates?.[0]?.content?.parts?.[0];
-        if (audioPart && audioPart.inlineData) {
-            return audioPart.inlineData.data;
-        }
+    return response.text ? response.text.trim() : "";
+}
 
-        return null;
-    } catch (error) {
-        console.error("Error generating storybook speech:", error);
-        throw error;
-    }
+export async function generateStorybookSpeech(text: string, voice: string, expression: string, accent?: string, signal?: AbortSignal): Promise<string | null> {
+    const ai = getAiClient();
+    // Inject stronger accent prompt if provided
+    const prompt = `(${expression}${accent ? `, ${accent}` : ''}): ${text}`;
+    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-tts",
+        contents: [{ parts: [{ text: prompt }] }],
+        config: { responseModalities: [Modality.AUDIO], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice as any } } } },
+    }), undefined, signal);
+    return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || null;
 }
 
 export async function generateVideoFromScene(
     scene: StoryboardScene,
     aspectRatio: string,
     scriptPrompt: string,
-    characters: Character[],
     audioOptions: AudioOptions | null,
-    imageStyle: string,
+    visualStyle: string,
+    characterStyle: string, // New Parameter to detect Afro-toon
     videoModel: string,
     resolution: '720p' | '1080p',
     cameraMovement: string,
     onProgress: (message: string) => void,
-    previousVideoObject: any, // To extend from a previous clip
+    previousVideoObject: any,
     signal?: AbortSignal
 ): Promise<{ videoUrl: string | null; audioUrl: string | null; videoObject: any; audioBase64: string | null; }> {
     const ai = getAiClient();
-    if (!scene.src) {
-        return { videoUrl: null, audioUrl: null, videoObject: null, audioBase64: null };
-    }
+    if (!scene.src) return { videoUrl: null, audioUrl: null, videoObject: null, audioBase64: null };
 
-    onProgress("Generating audio track...");
     let audioBase64: string | null = null;
-    if (audioOptions) {
-        if (audioOptions.mode === 'tts') {
-            audioBase64 = await generateSpeech(audioOptions.data, characters, imageStyle, signal);
-        } else {
-            audioBase64 = audioOptions.data;
-        }
-    }
-    const audioUrl = audioBase64 ? URL.createObjectURL(pcmToWavBlob(base64ToBytes(audioBase64))) : null;
-
-    onProgress("Preparing video generation...");
     
-    // Combine script and camera movement into the prompt
-    let finalVideoPrompt = scriptPrompt || scene.prompt;
-    const movementPrompt = CAMERA_MOVEMENT_PROMPTS[cameraMovement] || '';
-    if (movementPrompt) {
-        finalVideoPrompt = `${movementPrompt}\n\nScene: ${finalVideoPrompt}`;
-    }
+    // DETERMINE ACCENT BASED ON STYLE
+    const speechAccent = characterStyle === 'Afro-toon' ? 'Nigerian Accent, Pidgin English' : undefined;
 
-    const videoGenerationPayload: any = {
-        model: videoModel,
-        prompt: finalVideoPrompt,
-        config: {
-            numberOfVideos: 1,
-            resolution: resolution,
-            aspectRatio: aspectRatio as '16:9' | '9:16',
-        }
-    };
-
-    if (previousVideoObject) {
-        videoGenerationPayload.video = previousVideoObject;
-    } else {
-        videoGenerationPayload.image = {
-            imageBytes: scene.src,
-            mimeType: 'image/png',
-        };
+    if (audioOptions && audioOptions.mode === 'tts') {
+        audioBase64 = await generateStorybookSpeech(audioOptions.data, 'Kore', 'Storytelling', speechAccent, signal);
+    } else if (audioOptions && audioOptions.mode === 'upload') {
+        audioBase64 = audioOptions.data;
+    } else if (scriptPrompt && !audioOptions) {
+        // AUTO-GENERATE AUDIO FROM SCRIPT IF PRESENT AND NO AUDIO OPTIONS PROVIDED
+        // This ensures the dialogue speaks in the video
+        onProgress("Generating audio...");
+        audioBase64 = await generateStorybookSpeech(scriptPrompt, 'Kore', 'Storytelling', speechAccent, signal);
     }
     
-    let operation: GenerateVideosOperation = await withRetry(() => ai.models.generateVideos(videoGenerationPayload), onProgress, signal);
+    // Prompt constr
+    let finalPrompt = scriptPrompt || scene.prompt;
+    if (CAMERA_MOVEMENT_PROMPTS[cameraMovement]) finalPrompt = `${CAMERA_MOVEMENT_PROMPTS[cameraMovement]} Scene: ${finalPrompt}`;
+    
+    const payload: any = { model: videoModel, prompt: finalPrompt, config: { numberOfVideos: 1, resolution, aspectRatio: aspectRatio as any } };
+    if (previousVideoObject) payload.video = previousVideoObject;
+    else payload.image = { imageBytes: scene.src, mimeType: 'image/png' };
 
-    onProgress("Video generation started. This may take several minutes...");
-
-    const pollInterval = 10000; // 10 seconds
-    const maxWaitTime = 5 * 60 * 1000; // 5 minutes
-    let elapsedTime = 0;
-
-    while (!operation.done && elapsedTime < maxWaitTime) {
+    let op: GenerateVideosOperation = await withRetry(() => ai.models.generateVideos(payload), onProgress, signal);
+    
+    // Polling logic...
+    while (!op.done) {
         if (signal?.aborted) throw new Error("Aborted");
-        await new Promise(resolve => setTimeout(resolve, pollInterval));
-        elapsedTime += pollInterval;
-        try {
-            operation = await ai.operations.getVideosOperation({ operation: operation });
-            const progress = operation.metadata?.progressPercentage || 0;
-            onProgress(`Processing video... ${Math.round(progress)}%`);
-        } catch (opError) {
-             // Handle cases where the operation itself errors out during polling
-             console.error("Error polling video operation:", opError);
-             throw new Error(`Video operation failed during processing: ${parseErrorMessage(opError)}`);
-        }
-    }
-
-    if (!operation.done) {
-        throw new Error("Video generation timed out after 5 minutes.");
-    }
-
-    if (operation.error) {
-        throw new Error(`Video generation failed with an error: ${operation.error.message}`);
-    }
-
-    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-    if (!downloadLink) {
-        throw new Error("Generation succeeded but no video was returned. This may be a safety block.");
+        await delay(10000);
+        op = await ai.operations.getVideosOperation({ operation: op });
+        onProgress(`Processing... ${op.metadata?.progressPercentage || 0}%`);
     }
     
-    onProgress("Downloading video...");
-    const API_KEY = process.env.API_KEY;
-    const response = await fetch(`${downloadLink}&key=${API_KEY}`);
-    if (!response.ok) {
-        throw new Error(`Failed to download video file. Status: ${response.statusText}`);
+    const uri = op.response?.generatedVideos?.[0]?.video?.uri;
+    if (!uri) throw new Error("No video returned.");
+    
+    // Fetch with API Key and robust error handling
+    const fetchUrl = `${uri}&key=${process.env.API_KEY}`;
+    
+    // Initial fetch
+    let resp = await fetch(fetchUrl);
+    
+    if (!resp.ok) {
+        // Fallback: try fetching without key, just in case (sometimes pre-signed URLs don't need it)
+        try {
+             const fallbackResp = await fetch(uri);
+             if (fallbackResp.ok) {
+                 resp = fallbackResp;
+             } else {
+                 throw new Error(`Failed to download video: ${resp.status} ${resp.statusText}`);
+             }
+        } catch (e) {
+             throw new Error(`Failed to download video: ${resp.status} ${resp.statusText}`);
+        }
     }
-    const videoBlob = await response.blob();
-    const videoUrl = URL.createObjectURL(videoBlob);
+    
+    const blob = await resp.blob();
+    
+    if (blob.size < 1000) {
+         throw new Error("Downloaded video file is empty or invalid (0 bytes). Please try regenerating.");
+    }
 
-    return { videoUrl, audioUrl, videoObject: operation.response?.generatedVideos?.[0]?.video, audioBase64 };
+    return { videoUrl: URL.createObjectURL(blob), audioUrl: audioBase64 ? URL.createObjectURL(pcmToWavBlob(base64ToBytes(audioBase64))) : null, videoObject: op.response?.generatedVideos?.[0]?.video, audioBase64 };
 }
 
 export async function generateVideoFromImages(
@@ -1320,90 +780,63 @@ export async function generateVideoFromImages(
     signal?: AbortSignal
 ): Promise<{ videoUrl: string | null; videoObject: any; }> {
     const ai = getAiClient();
-    const videoGenerationPayload: any = {
-        model: videoModel,
-        prompt: prompt,
-        config: {
-            numberOfVideos: 1,
-            resolution: resolution,
-            aspectRatio: aspectRatio as '16:9' | '9:16',
-        }
-    };
+    const payload: any = { model: videoModel, prompt, config: { numberOfVideos: 1, resolution, aspectRatio: aspectRatio as any } };
 
-    switch (animationMode) {
-        case 'start':
-            if (!images[0]) throw new Error("A starting image is required for this animation mode.");
-            videoGenerationPayload.image = { imageBytes: images[0].base64, mimeType: images[0].mimeType };
-            break;
-        case 'startEnd':
-            if (!images[0] || !images[1]) throw new Error("Both a start and end image are required for this animation mode.");
-            videoGenerationPayload.image = { imageBytes: images[0].base64, mimeType: images[0].mimeType };
-            videoGenerationPayload.config.lastFrame = { imageBytes: images[1].base64, mimeType: images[1].mimeType };
-            break;
-        case 'reference':
-            const referenceImages = images.filter(img => img !== null) as { base64: string; mimeType: string }[];
-            if (referenceImages.length === 0) throw new Error("At least one reference image is required for this mode.");
-            
-            // Special constraints for multi-reference
-            const referenceImagesPayload: VideoGenerationReferenceImage[] = referenceImages.map(img => ({
-                image: { imageBytes: img.base64, mimeType: img.mimeType },
-                referenceType: VideoGenerationReferenceType.ASSET
-            }));
-            videoGenerationPayload.config.referenceImages = referenceImagesPayload;
-            // Overwrite config for multi-ref constraints
-            videoGenerationPayload.model = 'veo-3.1-generate-preview';
-            videoGenerationPayload.config.resolution = '720p';
-            videoGenerationPayload.config.aspectRatio = '16:9';
-            if (!prompt) {
-                throw new Error("A text prompt is required for animation with reference images.");
-            }
-            break;
+    if (animationMode === 'start') payload.image = { imageBytes: images[0]!.base64, mimeType: images[0]!.mimeType };
+    if (animationMode === 'startEnd') {
+        payload.image = { imageBytes: images[0]!.base64, mimeType: images[0]!.mimeType };
+        payload.config.lastFrame = { imageBytes: images[1]!.base64, mimeType: images[1]!.mimeType };
+    }
+    if (animationMode === 'reference') {
+        payload.model = 'veo-3.1-generate-preview';
+        payload.config.resolution = '720p'; // Forced
+        payload.config.referenceImages = images.filter(i=>i).map(i => ({ image: { imageBytes: i!.base64, mimeType: i!.mimeType }, referenceType: VideoGenerationReferenceType.ASSET }));
     }
 
-    onProgress("Preparing video generation...");
-    let operation: GenerateVideosOperation = await withRetry(() => ai.models.generateVideos(videoGenerationPayload), onProgress, signal);
-
-    onProgress("Video generation started. This may take a few minutes...");
-    const pollInterval = 10000;
-    const maxWaitTime = 5 * 60 * 1000;
-    let elapsedTime = 0;
-
-    while (!operation.done && elapsedTime < maxWaitTime) {
+    let op: GenerateVideosOperation = await withRetry(() => ai.models.generateVideos(payload), onProgress, signal);
+    while (!op.done) {
         if (signal?.aborted) throw new Error("Aborted");
-        await new Promise(resolve => setTimeout(resolve, pollInterval));
-        elapsedTime += pollInterval;
-
-        try {
-            operation = await ai.operations.getVideosOperation({ operation: operation });
-            const progress = operation.metadata?.progressPercentage || 0;
-            onProgress(`Processing video... ${Math.round(progress)}%`);
-        } catch (opError) {
-             console.error("Error polling video operation:", opError);
-             throw new Error(`Video operation failed during processing: ${parseErrorMessage(opError)}`);
-        }
+        await delay(10000);
+        op = await ai.operations.getVideosOperation({ operation: op });
+        onProgress(`Processing... ${op.metadata?.progressPercentage || 0}%`);
     }
-
-    if (!operation.done) {
-        throw new Error("Video generation timed out.");
+    const uri = op.response?.generatedVideos?.[0]?.video?.uri;
+    
+    // Fetch with API Key
+    const fetchUrl = `${uri}&key=${process.env.API_KEY}`;
+    const resp = await fetch(fetchUrl);
+    
+    if (!resp.ok) {
+        throw new Error(`Failed to download video: ${resp.status}`);
     }
     
-    if (operation.error) {
-        throw new Error(`Video generation failed: ${operation.error.message}`);
-    }
+    const blob = await resp.blob();
+    return { videoUrl: URL.createObjectURL(blob), videoObject: op.response?.generatedVideos?.[0]?.video };
+}
 
-    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-    if (!downloadLink) {
-        throw new Error("Generation succeeded but no video was returned. This might be a safety block.");
+export async function generateCameraAnglesFromImage(
+    referenceScene: StoryboardScene,
+    generationInfo: { aspectRatio: string; characterStyle: string; visualStyle: string; genre: string; characters: Character[]; imageModel: string; },
+    angleNames: string[],
+    focusSubject: string,
+    onProgress: (message: string) => void,
+    signal?: AbortSignal
+  ): Promise<StoryboardScene[]> {
+    // 1. Outpaint
+    const { src: extSrc } = await editImage({
+        imageBase64: referenceScene.src!, mimeType: 'image/png', editPrompt: "Outpaint environment.", aspectRatio: generationInfo.aspectRatio,
+        characterStyle: generationInfo.characterStyle, visualStyle: generationInfo.visualStyle, genre: generationInfo.genre, characters: generationInfo.characters, signal, imageModel: 'gemini-2.5-flash-image'
+    });
+    // 2. Analyze (simplified call)
+    // 3. Generate views
+    const scenes: StoryboardScene[] = [];
+    for (const angle of angleNames) {
+        onProgress(`Generating ${angle}...`);
+        const { src, error } = await editImage({
+            imageBase64: extSrc!, mimeType: 'image/png', editPrompt: `Camera view: ${angle}. Subject: ${focusSubject}.`, aspectRatio: generationInfo.aspectRatio,
+            characterStyle: generationInfo.characterStyle, visualStyle: generationInfo.visualStyle, genre: generationInfo.genre, characters: generationInfo.characters, signal, imageModel: 'gemini-2.5-flash-image'
+        });
+        scenes.push({ prompt: angle, src, error, angleName: angle });
     }
-    
-    onProgress("Downloading video...");
-    const API_KEY = process.env.API_KEY;
-    const response = await fetch(`${downloadLink}&key=${API_KEY}`);
-    if (!response.ok) {
-        throw new Error(`Failed to download video. Status: ${response.statusText}`);
-    }
-    const videoBlob = await response.blob();
-    const videoUrl = URL.createObjectURL(videoBlob);
-
-    return { videoUrl, videoObject: operation.response?.generatedVideos?.[0]?.video };
+    return scenes;
 }
